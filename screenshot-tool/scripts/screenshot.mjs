@@ -16,14 +16,24 @@ try {
 }
 
 const args = process.argv.slice(2)
-const baseUrl = process.env.BASE_URL ?? 'http://127.0.0.1:4173'
+const baseUrl = process.env.BASE_URL
 const rawTarget =
   args.find(
     (arg) =>
       arg.startsWith('http://') || arg.startsWith('https://') || arg.startsWith('/'),
   ) ??
-  process.env.URL ??
-  '/'
+  process.env.URL
+
+if (!rawTarget) {
+  throw new Error(
+    'No screenshot target provided. Pass a full URL, set URL, or pass a path with BASE_URL.',
+  )
+}
+
+if (!rawTarget.startsWith('http') && !baseUrl) {
+  throw new Error('Relative screenshot targets require BASE_URL, such as BASE_URL=http://host:port.')
+}
+
 const url = rawTarget.startsWith('http') ? rawTarget : new URL(rawTarget, baseUrl).href
 const widths = args.filter((arg) => /^\d+$/.test(arg)).map(Number)
 const viewportWidths = widths.length
@@ -44,6 +54,7 @@ const extraChromeArgs = (process.env.CHROME_ARGS ?? '')
   .split(/\s+/)
   .map((arg) => arg.trim())
   .filter(Boolean)
+const waitUntil = process.env.WAIT_UNTIL ?? 'networkidle'
 const blockFonts = process.env.BLOCK_FONTS === 'true'
 const blockStyles = process.env.BLOCK_STYLES === 'true'
 const disableJavaScript = process.env.DISABLE_JAVASCRIPT === 'true'
@@ -158,7 +169,8 @@ try {
 
         if (
           (blockStyles && resourceType === 'stylesheet') ||
-          (blockFonts && (resourceType === 'font' || /\.(woff2?|ttf|otf)(\?.*)?$/i.test(requestUrl)))
+          (blockFonts &&
+            (resourceType === 'font' || /\.(woff2?|ttf|otf)(\?.*)?$/i.test(requestUrl)))
         ) {
           route.abort()
           return
@@ -168,7 +180,7 @@ try {
       })
     }
 
-    await page.goto(url, { waitUntil: 'networkidle' })
+    await page.goto(url, { waitUntil })
     await page.evaluate(() => document.fonts?.ready)
 
     if (fillSelector) {

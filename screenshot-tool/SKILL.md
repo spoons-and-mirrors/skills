@@ -1,26 +1,34 @@
 ---
 name: screenshot-tool
-description: Capture reliable page and component screenshots with repo Playwright scripts. Use when the user asks for screenshots, visual verification, Playwright capture, or component-only screenshots.
+description: Capture reliable page and component screenshots of an already-running URL. Use when the user asks for screenshots, visual verification, Playwright capture, or component-only screenshots; ask for the target URL when missing.
 ---
 
 # Screenshot Tool
 
 ## Quick Start
 
-Do these steps in order from the application repo, not from the skill directory:
+This skill takes screenshots of an already-running website. It does not decide
+how to run the user's app, and it should not start `pnpm preview`, `npm run dev`,
+or any other server unless the user explicitly asks for that.
 
-1. Open the repo that owns the page and defines `screenshot` in `package.json`.
-2. Install that repo's dependencies if `node_modules/` is missing or the screenshot
-   script cannot resolve packages. Use the repo's package manager from
+If the user does not provide the running URL, stop and ask one short question for
+the URL or base URL and path. Do not assume a port, framework, package manager,
+or preview command.
+
+Do these steps in order:
+
+1. Get the exact running URL from the user, such as `http://127.0.0.1:PORT/pricing`.
+2. Open the app repo only if you need its installed Playwright dependency or its
+   screenshot package script.
+3. Install that repo's dependencies only if `node_modules/` is missing or the
+   screenshot script cannot resolve packages. Use the repo's package manager from
    `packageManager` or the lockfile: `pnpm install`, `npm install`,
    `bun install`, or `yarn install`. Do not switch package managers just because
    one command failed; avoid creating a new lockfile in the repo.
-3. Run or verify the app/preview server, usually on `http://127.0.0.1:4173`.
-4. Run the repo's `screenshot:install` script once if Chrome is missing,
-   Chromium crashes, or Linux browser libraries are missing.
-5. Capture with the repo's script. If the repo's script points at a missing
-   `.agents/skills/screenshot-tool/...` file, run the loaded skill script by
-   absolute path from the app repo instead.
+4. Run the repo's `screenshot:install` script, or this skill's installer by
+   absolute path, if Chrome is missing, Chromium crashes, or Linux browser
+   libraries are missing.
+5. Capture the explicit URL. If using a relative path, set `BASE_URL` explicitly.
 
 Do not run ad-hoc Playwright snippets such as `node -e "import { chromium } ..."`
 for normal screenshots. Those snippets bypass the helper's Chrome lookup,
@@ -32,7 +40,7 @@ Example for a pnpm repo:
 ```bash
 pnpm install
 pnpm screenshot:install
-pnpm screenshot -- / 768
+BASE_URL=http://127.0.0.1:PORT pnpm screenshot -- /pricing 768
 ```
 
 If the repo uses npm instead, use its matching scripts:
@@ -40,14 +48,14 @@ If the repo uses npm instead, use its matching scripts:
 ```bash
 npm install
 npm run screenshot:install
-npm run screenshot -- / 768
+BASE_URL=http://127.0.0.1:PORT npm run screenshot -- /pricing 768
 ```
 
 Fallback when the repo wrapper is missing but this skill is loaded:
 
 ```bash
 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot-install.mjs
-OUT_DIR=/tmp/screenshots WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs /pricing
+OUT_DIR=/tmp/screenshots WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/pricing
 ```
 
 Run that fallback from the application repo. The screenshot script loads
@@ -76,14 +84,14 @@ render; stop treating it as an install problem and inspect the page-specific CSS
 fonts, markup, or scripts.
 
 ```bash
-OUT_DIR=/tmp/screenshots WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs /
+OUT_DIR=/tmp/screenshots WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/
 OUT_DIR=/tmp/screenshots WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://example.com
 ```
 
 When the user asks to use a temp directory, set `OUT_DIR` explicitly:
 
 ```bash
-OUT_DIR=/tmp/screenshots WIDTHS=768 pnpm screenshot -- /pricing
+OUT_DIR=/tmp/screenshots WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/pricing
 ```
 
 ## Common Workflows
@@ -91,50 +99,50 @@ OUT_DIR=/tmp/screenshots WIDTHS=768 pnpm screenshot -- /pricing
 Check that the target route is reachable before debugging the screenshot tool:
 
 ```bash
-curl -I --max-time 5 http://127.0.0.1:4173/pricing
+curl -I --max-time 5 http://127.0.0.1:PORT/pricing
 ```
 
-Viewport screenshot at the default base URL:
+Viewport screenshot at the target URL:
 
 ```bash
-WIDTHS=768 SCROLLS=1000 pnpm screenshot -- /
+WIDTHS=768 SCROLLS=1000 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/
 ```
 
 Screenshot multiple widths:
 
 ```bash
-WIDTHS=330,375,768 pnpm screenshot -- /
+WIDTHS=330,375,768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/
 ```
 
 Screenshot multiple scroll positions:
 
 ```bash
-WIDTHS=768 SCROLLS=900,1000,1100 pnpm screenshot -- /
+WIDTHS=768 SCROLLS=900,1000,1100 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/
 ```
 
 Screenshot the full page:
 
 ```bash
-FULL_PAGE=true WIDTHS=768 pnpm screenshot -- /
+FULL_PAGE=true WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/
 ```
 
 Screenshot a specific component or DOM node:
 
 ```bash
-SELECTOR='[data-token-comparison-card]' WIDTHS=768 pnpm screenshot -- /
+SELECTOR='[data-token-comparison-card]' WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/
 ```
 
 Fill an input, wait for UI updates, then screenshot the input or a containing
 component:
 
 ```bash
-FILL_SELECTOR='[data-provider-search-input]' FILL_TEXT='o' SELECTOR='[data-provider-search-input]' WIDTHS=768 pnpm screenshot -- /pricing
+FILL_SELECTOR='[data-provider-search-input]' FILL_TEXT='o' SELECTOR='[data-provider-search-input]' WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/pricing
 ```
 
 If the repo wrapper is missing:
 
 ```bash
-FILL_SELECTOR='[data-provider-search-input]' FILL_TEXT='o' SELECTOR='[data-provider-search-input]' WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs /pricing
+BASE_URL=http://127.0.0.1:PORT FILL_SELECTOR='[data-provider-search-input]' FILL_TEXT='o' SELECTOR='[data-provider-search-input]' WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs /pricing
 ```
 
 ## Selector Screenshots
@@ -150,7 +158,7 @@ Add a stable `data-*` attribute to the element when no good selector exists:
 Then capture it:
 
 ```bash
-SELECTOR='[data-feature-card]' WIDTHS=768 pnpm screenshot -- /
+SELECTOR='[data-feature-card]' WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/
 ```
 
 The script scrolls the selector into view, waits 2 seconds for animations to settle, and captures the element bounding box with a 20px margin on every side for breathing room.
@@ -171,9 +179,16 @@ problem. Try diagnostic fallbacks such as `DISABLE_JAVASCRIPT=true`,
 `BLOCK_FONTS=true`, or `BLOCK_STYLES=true`. Only use these to isolate the crash or
 produce an emergency screenshot; they can change the rendered appearance.
 
+If downloaded Chrome crashes on one page but not others, retry with the flags
+that are most useful in constrained Linux environments:
+
+```bash
+WAIT_UNTIL=domcontentloaded CHROME_ARGS='--disable-dev-shm-usage --disable-gpu --single-process' node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/pricing
+```
+
 ## Options
 
-- `BASE_URL`: base URL for relative targets, default `http://127.0.0.1:4173`.
+- `BASE_URL`: required when passing a relative target such as `/pricing`.
 - `URL`: target URL if not passed as an argument.
 - `WIDTHS`: comma-separated viewport widths, default `330,375,425,499,500,768`.
 - `HEIGHT`: viewport height, default `900`.
@@ -188,6 +203,8 @@ produce an emergency screenshot; they can change the rendered appearance.
 - `BLOCK_FONTS=true`: block font requests for diagnostic captures.
 - `BLOCK_STYLES=true`: block stylesheet requests for diagnostic captures.
 - `CHROME_ARGS`: extra Chrome flags, space-separated.
+- `WAIT_UNTIL`: Playwright `page.goto` wait mode, default `networkidle`; use
+  `domcontentloaded` for pages that crash or never become idle.
 - `LOCALE`: browser locale and `Accept-Language`, default `en-US`.
 - `CHROME_PATH`: explicit Chrome/Chromium executable.
 
