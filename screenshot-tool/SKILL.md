@@ -1,6 +1,6 @@
 ---
 name: screenshot-tool
-description: Capture reliable page and component screenshots. Read this skill when the user explicitly asks for screenshots.
+description: Capture reliable page and component screenshots with repo Playwright scripts. Use when the user asks for screenshots, visual verification, Playwright capture, or component-only screenshots.
 ---
 
 # Screenshot Tool
@@ -8,18 +8,37 @@ description: Capture reliable page and component screenshots. Read this skill wh
 ## Quick Start
 
 Run the app or preview server first, usually on `http://127.0.0.1:4173`.
+Run screenshot commands from the application repo that defines the `screenshot`
+script in `package.json`; do not run the skill's `scripts/screenshot.mjs`
+directly from the skill cache or clone. The direct script import resolves
+`@playwright/test` relative to the skill directory and can fail even when the app
+repo has Playwright installed.
 
 ```bash
 pnpm screenshot -- / 768
 ```
 
-Install Chrome and Linux browser libraries if Chrome is missing:
+Install Chrome and Linux browser libraries if Chrome is missing, Chromium
+crashes during `page.goto`, or the first capture fails with browser/library
+errors:
 
 ```bash
 pnpm screenshot:install
 ```
 
+When the user asks to use a temp directory, set `OUT_DIR` explicitly:
+
+```bash
+OUT_DIR=/tmp/screenshots WIDTHS=768 pnpm screenshot -- /pricing
+```
+
 ## Common Workflows
+
+Check that the target route is reachable before debugging the screenshot tool:
+
+```bash
+curl -I --max-time 5 http://127.0.0.1:4173/pricing
+```
 
 Viewport screenshot at the default base URL:
 
