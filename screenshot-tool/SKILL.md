@@ -22,12 +22,14 @@ Default process:
    missing, Chromium crashes, or Linux browser libraries are missing. The installer
    installs Node dependencies into the loaded skill folder itself.
 3. Capture the explicit URL with this skill's helper from the same skill folder.
-   Set `OUT_DIR=/tmp/...` when the user asks for a temp directory or when you are
-   not in the app repo.
+   Run it from the directory where the user should find the output. By default,
+   screenshots are written to `./screenshots` relative to the agent's current
+   working directory. Do not use `/tmp` unless the user explicitly asks for a temp
+   directory.
 
 ```bash
 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot-install.mjs
-OUT_DIR=/tmp/screenshots WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/pricing
+WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/pricing
 ```
 
 The installer creates `node_modules/` in the loaded skill folder and a
@@ -48,12 +50,12 @@ When this skill is loaded:
 
 ```bash
 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot-install.mjs
-OUT_DIR=/tmp/screenshots WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/pricing
+WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/pricing
 ```
 
-Run that fallback from any convenient directory, but use `OUT_DIR=/tmp/...` if
-the current directory is a tools or skills repo. The screenshot script loads
-`@playwright/test` from the loaded skill folder first.
+Run that fallback from the workspace or directory where the user should find the
+output. The screenshot script loads `@playwright/test` from the loaded skill
+folder first.
 
 Install the skill-folder Playwright dependency, Chrome, and Linux browser libraries if Chrome is
 missing, Chromium crashes during `page.goto`, or the first capture fails with
@@ -85,14 +87,16 @@ especially around complex text/font rendering. The screenshot is valid if a late
 attempt saves the file; the full error is only useful when all attempts fail.
 
 ```bash
-OUT_DIR=/tmp/screenshots WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/
-OUT_DIR=/tmp/screenshots WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://example.com
+WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/
+WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://example.com
 ```
 
-When the user asks to use a temp directory, set `OUT_DIR` explicitly:
+When the user asks for a specific output directory, set `OUT_DIR` explicitly. Use
+cwd-relative directories by default, and use `/tmp/...` only when the user asks for
+a temp directory:
 
 ```bash
-OUT_DIR=/tmp/screenshots WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/pricing
+OUT_DIR=./pricing-screenshot WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/pricing
 ```
 
 ## Common Workflows
@@ -197,7 +201,7 @@ ATTEMPTS=3 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs 
 - `WIDTHS`: comma-separated viewport widths, default `330,375,425,499,500,768`.
 - `HEIGHT`: viewport height, default `900`.
 - `SCROLLS`: comma-separated scroll positions, default `0`.
-- `OUT_DIR`: output directory, default `screenshots`.
+- `OUT_DIR`: output directory, default `screenshots` relative to the current working directory. Prefer cwd-relative output so the user can find it; use `/tmp/...` only when requested.
 - `FULL_PAGE=true`: capture full-page viewport screenshots.
 - `SELECTOR`: capture only the first matching DOM node, including a 20px margin around it.
 - `FILL_SELECTOR`: fill the first matching input before capture.
@@ -217,4 +221,4 @@ ATTEMPTS=3 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs 
 
 ## Output
 
-Screenshots are written to `screenshots/` by default. Filenames include the route, width, and scroll suffix when applicable, such as `home-768-y1000.png`.
+Screenshots are written to `screenshots/` in the current working directory by default. Filenames include the route, width, and scroll suffix when applicable, such as `home-768-y1000.png`.
