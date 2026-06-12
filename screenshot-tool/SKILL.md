@@ -7,24 +7,51 @@ description: Capture reliable page and component screenshots with repo Playwrigh
 
 ## Quick Start
 
-Run the app or preview server first, usually on `http://127.0.0.1:4173`.
-Run screenshot commands from the application repo that defines the `screenshot`
-script in `package.json`; do not run the skill's `scripts/screenshot.mjs`
-directly from the skill cache or clone. The direct script import resolves
-`@playwright/test` relative to the skill directory and can fail even when the app
-repo has Playwright installed.
+Do these steps in order from the application repo, not from the skill directory:
+
+1. Open the repo that owns the page and defines `screenshot` in `package.json`.
+2. Install that repo's dependencies if `node_modules/` is missing or the screenshot
+   script cannot resolve packages. Use the repo's package manager from
+   `packageManager` or the lockfile: `pnpm install`, `npm install`,
+   `bun install`, or `yarn install`. Do not switch package managers just because
+   one command failed; avoid creating a new lockfile in the repo.
+3. Run or verify the app/preview server, usually on `http://127.0.0.1:4173`.
+4. Run the repo's `screenshot:install` script once if Chrome is missing,
+   Chromium crashes, or Linux browser libraries are missing.
+5. Capture with the repo's script.
+
+Do not run the skill's `scripts/screenshot.mjs` directly from the skill cache or
+clone. The direct script import resolves `@playwright/test` relative to the skill
+directory and can fail even when the app repo has Playwright installed.
+
+Example for a pnpm repo:
 
 ```bash
+pnpm install
+pnpm screenshot:install
 pnpm screenshot -- / 768
+```
+
+If the repo uses npm instead, use its matching scripts:
+
+```bash
+npm install
+npm run screenshot:install
+npm run screenshot -- / 768
 ```
 
 Install Chrome and Linux browser libraries if Chrome is missing, Chromium
 crashes during `page.goto`, or the first capture fails with browser/library
-errors:
+errors. Use the same package manager as the repo:
 
 ```bash
 pnpm screenshot:install
+npm run screenshot:install
 ```
+
+If `Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@playwright/test'`
+appears, you are either in the wrong directory or the app repo dependencies have
+not been installed. Change to the app repo and run its install command first.
 
 When the user asks to use a temp directory, set `OUT_DIR` explicitly:
 
