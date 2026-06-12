@@ -1,12 +1,13 @@
 import { access, mkdir, readdir } from 'node:fs/promises'
 import { constants } from 'node:fs'
-import { delimiter, join } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 
 const browserRoot = '/tmp/opencode/browsers'
 const debsDir = '/tmp/opencode/browser-lib-debs'
 const libsDir = '/tmp/opencode/browser-libs'
-const runtimeDir = '/tmp/opencode/screenshot-tool-runtime'
+const skillRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const packages = [
   'libgtk-3-0t64',
   'libatk1.0-0t64',
@@ -59,6 +60,15 @@ async function executable(name) {
   return null
 }
 
+async function exists(pathname) {
+  try {
+    await access(pathname)
+    return true
+  } catch {
+    return false
+  }
+}
+
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: 'inherit', ...options })
@@ -76,7 +86,6 @@ function run(command, args, options = {}) {
 }
 
 await mkdir(browserRoot, { recursive: true })
-await mkdir(runtimeDir, { recursive: true })
 const pnpm = await executable('pnpm')
 const npx = await executable('npx')
 const npm = await executable('npm')
@@ -85,19 +94,22 @@ if (!pnpm && !npx && !npm) {
   throw new Error('Cannot install screenshot runtime: pnpm, npx, or npm is required.')
 }
 
-await run(npm ?? npx, npm ? ['init', '-y'] : ['--yes', 'npm', 'init', '-y'], {
-  cwd: runtimeDir,
-})
-
 const installEnv = { ...process.env, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' }
+const hasPackageJson = await exists(join(skillRoot, 'package.json'))
+
+if (!hasPackageJson) {
+  await run(npm ?? npx, npm ? ['init', '-y'] : ['--yes', 'npm', 'init', '-y'], {
+    cwd: skillRoot,
+  })
+}
 
 if (pnpm) {
-  await run(pnpm, ['add', '@playwright/test'], { cwd: runtimeDir, env: installEnv })
+  await run(pnpm, ['add', '@playwright/test'], { cwd: skillRoot, env: installEnv })
 } else if (npm) {
-  await run(npm, ['install', '@playwright/test'], { cwd: runtimeDir, env: installEnv })
+  await run(npm, ['install', '@playwright/test'], { cwd: skillRoot, env: installEnv })
 } else {
   await run(npx, ['--yes', 'npm', 'install', '@playwright/test'], {
-    cwd: runtimeDir,
+    cwd: skillRoot,
     env: installEnv,
   })
 }

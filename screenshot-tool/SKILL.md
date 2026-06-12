@@ -19,27 +19,24 @@ Default process:
 
 1. Get the exact running URL from the user, such as `http://127.0.0.1:PORT/pricing`.
 2. Run this skill's installer once if the helper cannot load Playwright, Chrome is
-   missing, Chromium crashes, or Linux browser libraries are missing.
-3. Capture the explicit URL with this skill's helper. Set `OUT_DIR=/tmp/...` when
-   the user asks for a temp directory or when you are not in the app repo.
+   missing, Chromium crashes, or Linux browser libraries are missing. The installer
+   installs Node dependencies into the loaded skill folder itself.
+3. Capture the explicit URL with this skill's helper from the same skill folder.
+   Set `OUT_DIR=/tmp/...` when the user asks for a temp directory or when you are
+   not in the app repo.
 
 ```bash
 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot-install.mjs
 OUT_DIR=/tmp/screenshots WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/pricing
 ```
 
-The installer creates a reusable Playwright runtime under
-`/tmp/opencode/screenshot-tool-runtime` and a Chrome/runtime-library cache under
-`/tmp/opencode`. Do not add dependencies to the user's project just to take a
-screenshot of an already-running URL.
+The installer creates `node_modules/` in the loaded skill folder and a
+Chrome/runtime-library cache under `/tmp/opencode`. Do not add dependencies to
+the user's project just to take a screenshot of an already-running URL.
 
-Only inspect the app repo's `package.json` or run its package scripts when the
-user explicitly asks to use the repo workflow, or when you need app-specific
-selectors/source code. If you do use the app repo, install dependencies only if
-`node_modules/` is missing or the screenshot script cannot resolve packages. Use
-the repo's package manager from `packageManager` or the lockfile: `pnpm install`,
-`npm install`, `bun install`, or `yarn install`. Do not switch package managers
-just because one command failed; avoid creating a new lockfile in the repo.
+Do not inspect the app repo's `package.json`, run app package scripts, or install
+app dependencies just to screenshot an already-running URL. Only inspect app
+source when you need app-specific selectors or markup.
 
 Do not run ad-hoc Playwright snippets such as `node -e "import { chromium } ..."`
 or transient Puppeteer commands such as `npm exec --package puppeteer-core` for
@@ -47,23 +44,7 @@ normal screenshots. Those snippets bypass the helper's Chrome lookup,
 `--no-sandbox`, Linux `LD_LIBRARY_PATH`, font configuration, fill/selector
 support, and crash workarounds.
 
-Optional repo-script example for a pnpm repo:
-
-```bash
-pnpm install
-pnpm screenshot:install
-BASE_URL=http://127.0.0.1:PORT pnpm screenshot -- /pricing 768
-```
-
-If the repo uses npm instead and already provides matching scripts:
-
-```bash
-npm install
-npm run screenshot:install
-BASE_URL=http://127.0.0.1:PORT npm run screenshot -- /pricing 768
-```
-
-Fallback when the repo wrapper is missing but this skill is loaded:
+When this skill is loaded:
 
 ```bash
 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot-install.mjs
@@ -71,11 +52,10 @@ OUT_DIR=/tmp/screenshots WIDTHS=768 node ~/.cache/opencode/skills/screenshot-too
 ```
 
 Run that fallback from any convenient directory, but use `OUT_DIR=/tmp/...` if
-the current directory is a tools or skills repo. The screenshot script first
-loads `@playwright/test` from the current app repo, then falls back to the
-runtime installed under `/tmp/opencode/screenshot-tool-runtime`.
+the current directory is a tools or skills repo. The screenshot script loads
+`@playwright/test` from the loaded skill folder first.
 
-Install Chrome, Playwright runtime, and Linux browser libraries if Chrome is
+Install the skill-folder Playwright dependency, Chrome, and Linux browser libraries if Chrome is
 missing, Chromium crashes during `page.goto`, or the first capture fails with
 browser/library errors:
 
@@ -84,9 +64,10 @@ node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot-install.mjs
 ```
 
 If `Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@playwright/test'`
-appears after running the installer, the runtime installation failed or the
-helper is stale. Run the installer again and do not replace the helper with a
-Puppeteer one-liner.
+appears, run this skill's `screenshot-install.mjs` from the same loaded skill
+folder, then rerun `screenshot.mjs`. Do not switch to the Playwright CLI, do not
+run transient Puppeteer commands, and do not install packages in the user's app
+repo just for a screenshot.
 
 If a repo script fails with `Cannot find module .../.agents/skills/screenshot-tool`,
 the local skill wrapper is missing. Do not edit unrelated app files just to take a

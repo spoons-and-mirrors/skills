@@ -4,6 +4,7 @@
       "name": "screenshot-tool",
       "files": [
         "SKILL.md",
+        "package.json",
         "scripts/screenshot-install.mjs",
         "scripts/screenshot.mjs"
       ]

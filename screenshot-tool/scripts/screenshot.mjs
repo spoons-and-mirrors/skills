@@ -2,24 +2,19 @@ import { access, mkdir, readdir } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const requireFromApp = createRequire(path.join(process.cwd(), 'package.json'))
-const requireFromRuntime = createRequire(
-  '/tmp/opencode/screenshot-tool-runtime/package.json',
-)
+const skillRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const requireFromSkill = createRequire(path.join(skillRoot, 'package.json'))
 let chromium
 
 try {
-  ;({ chromium } = requireFromApp('@playwright/test'))
+  ;({ chromium } = requireFromSkill('@playwright/test'))
 } catch (error) {
-  try {
-    ;({ chromium } = requireFromRuntime('@playwright/test'))
-  } catch {
-    throw new Error(
-      'Cannot load @playwright/test. Run screenshot-install first to install the standalone runtime.',
-      { cause: error },
-    )
-  }
+  throw new Error(
+    'Cannot load @playwright/test. Run this skill\'s screenshot-install.mjs first to install dependencies in the loaded skill folder.',
+    { cause: error },
+  )
 }
 
 const args = process.argv.slice(2)
