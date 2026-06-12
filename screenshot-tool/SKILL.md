@@ -18,10 +18,10 @@ or preview command.
 Default process:
 
 1. Get the exact running URL from the user, such as `http://127.0.0.1:PORT/pricing`.
-2. Run this skill's installer once if the helper cannot load Playwright, Chrome is
-   missing, Chromium crashes, or Linux browser libraries are missing. The installer
+2. Run this skill's installer before the first capture attempt. Do not wait for a
+   missing-Playwright or missing-Chrome error. The installer is idempotent and
    installs Node dependencies into the loaded skill folder itself.
-3. Capture the explicit URL with this skill's helper from the same skill folder.
+3. Capture the explicit URL with this skill's helper from the same loaded skill folder.
    Run it from the directory where the user should find the output. By default,
    screenshots are written to `./screenshots` relative to the agent's current
    working directory. Do not use `/tmp` unless the user explicitly asks for a temp
@@ -46,7 +46,10 @@ normal screenshots. Those snippets bypass the helper's Chrome lookup,
 `--no-sandbox`, Linux `LD_LIBRARY_PATH`, font configuration, fill/selector
 support, and crash workarounds.
 
-When this skill is loaded:
+When this skill is loaded, every screenshot workflow starts with the installer
+command. Run it even when you expect dependencies to already exist, unless you
+successfully ran it earlier in the same assistant turn from the same loaded skill
+folder.
 
 ```bash
 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot-install.mjs
@@ -57,9 +60,9 @@ Run that fallback from the workspace or directory where the user should find the
 output. The screenshot script loads `@playwright/test` from the loaded skill
 folder first.
 
-Install the skill-folder Playwright dependency, Chrome, and Linux browser libraries if Chrome is
-missing, Chromium crashes during `page.goto`, or the first capture fails with
-browser/library errors:
+The installer handles the skill-folder Playwright dependency, Chrome, and Linux
+browser libraries. Treat browser/library errors after that as installation
+diagnostics, not as the normal install trigger:
 
 ```bash
 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot-install.mjs
