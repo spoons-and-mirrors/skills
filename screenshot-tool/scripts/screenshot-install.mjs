@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process'
 const browserRoot = '/tmp/opencode/browsers'
 const debsDir = '/tmp/opencode/browser-lib-debs'
 const libsDir = '/tmp/opencode/browser-libs'
+const runtimeDir = '/tmp/opencode/screenshot-tool-runtime'
 const packages = [
   'libgtk-3-0t64',
   'libatk1.0-0t64',
@@ -75,8 +76,31 @@ function run(command, args, options = {}) {
 }
 
 await mkdir(browserRoot, { recursive: true })
+await mkdir(runtimeDir, { recursive: true })
 const pnpm = await executable('pnpm')
 const npx = await executable('npx')
+const npm = await executable('npm')
+
+if (!pnpm && !npx && !npm) {
+  throw new Error('Cannot install screenshot runtime: pnpm, npx, or npm is required.')
+}
+
+await run(npm ?? npx, npm ? ['init', '-y'] : ['--yes', 'npm', 'init', '-y'], {
+  cwd: runtimeDir,
+})
+
+const installEnv = { ...process.env, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' }
+
+if (pnpm) {
+  await run(pnpm, ['add', '@playwright/test'], { cwd: runtimeDir, env: installEnv })
+} else if (npm) {
+  await run(npm, ['install', '@playwright/test'], { cwd: runtimeDir, env: installEnv })
+} else {
+  await run(npx, ['--yes', 'npm', 'install', '@playwright/test'], {
+    cwd: runtimeDir,
+    env: installEnv,
+  })
+}
 
 if (pnpm) {
   await run(pnpm, [

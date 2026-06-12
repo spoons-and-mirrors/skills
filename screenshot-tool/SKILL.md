@@ -15,27 +15,39 @@ If the user does not provide the running URL, stop and ask one short question fo
 the URL or base URL and path. Do not assume a port, framework, package manager,
 or preview command.
 
-Do these steps in order:
+Default process:
 
 1. Get the exact running URL from the user, such as `http://127.0.0.1:PORT/pricing`.
-2. Open the app repo only if you need its installed Playwright dependency or its
-   screenshot package script.
-3. Install that repo's dependencies only if `node_modules/` is missing or the
-   screenshot script cannot resolve packages. Use the repo's package manager from
-   `packageManager` or the lockfile: `pnpm install`, `npm install`,
-   `bun install`, or `yarn install`. Do not switch package managers just because
-   one command failed; avoid creating a new lockfile in the repo.
-4. Run the repo's `screenshot:install` script, or this skill's installer by
-   absolute path, if Chrome is missing, Chromium crashes, or Linux browser
-   libraries are missing.
-5. Capture the explicit URL. If using a relative path, set `BASE_URL` explicitly.
+2. Run this skill's installer once if the helper cannot load Playwright, Chrome is
+   missing, Chromium crashes, or Linux browser libraries are missing.
+3. Capture the explicit URL with this skill's helper. Set `OUT_DIR=/tmp/...` when
+   the user asks for a temp directory or when you are not in the app repo.
+
+```bash
+node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot-install.mjs
+OUT_DIR=/tmp/screenshots WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/pricing
+```
+
+The installer creates a reusable Playwright runtime under
+`/tmp/opencode/screenshot-tool-runtime` and a Chrome/runtime-library cache under
+`/tmp/opencode`. Do not add dependencies to the user's project just to take a
+screenshot of an already-running URL.
+
+Only inspect the app repo's `package.json` or run its package scripts when the
+user explicitly asks to use the repo workflow, or when you need app-specific
+selectors/source code. If you do use the app repo, install dependencies only if
+`node_modules/` is missing or the screenshot script cannot resolve packages. Use
+the repo's package manager from `packageManager` or the lockfile: `pnpm install`,
+`npm install`, `bun install`, or `yarn install`. Do not switch package managers
+just because one command failed; avoid creating a new lockfile in the repo.
 
 Do not run ad-hoc Playwright snippets such as `node -e "import { chromium } ..."`
-for normal screenshots. Those snippets bypass the helper's Chrome lookup,
-`--no-sandbox`, and Linux `LD_LIBRARY_PATH` setup, which often causes missing
-browser or missing `libatk`/GTK errors.
+or transient Puppeteer commands such as `npm exec --package puppeteer-core` for
+normal screenshots. Those snippets bypass the helper's Chrome lookup,
+`--no-sandbox`, Linux `LD_LIBRARY_PATH`, font configuration, fill/selector
+support, and crash workarounds.
 
-Example for a pnpm repo:
+Optional repo-script example for a pnpm repo:
 
 ```bash
 pnpm install
@@ -43,7 +55,7 @@ pnpm screenshot:install
 BASE_URL=http://127.0.0.1:PORT pnpm screenshot -- /pricing 768
 ```
 
-If the repo uses npm instead, use its matching scripts:
+If the repo uses npm instead and already provides matching scripts:
 
 ```bash
 npm install
@@ -58,21 +70,23 @@ node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot-install.mjs
 OUT_DIR=/tmp/screenshots WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/pricing
 ```
 
-Run that fallback from the application repo. The screenshot script loads
-`@playwright/test` from the current app repo, not from the skill directory.
+Run that fallback from any convenient directory, but use `OUT_DIR=/tmp/...` if
+the current directory is a tools or skills repo. The screenshot script first
+loads `@playwright/test` from the current app repo, then falls back to the
+runtime installed under `/tmp/opencode/screenshot-tool-runtime`.
 
-Install Chrome and Linux browser libraries if Chrome is missing, Chromium
-crashes during `page.goto`, or the first capture fails with browser/library
-errors. Use the same package manager as the repo:
+Install Chrome, Playwright runtime, and Linux browser libraries if Chrome is
+missing, Chromium crashes during `page.goto`, or the first capture fails with
+browser/library errors:
 
 ```bash
-pnpm screenshot:install
-npm run screenshot:install
+node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot-install.mjs
 ```
 
 If `Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@playwright/test'`
-appears, you are either in the wrong directory or the app repo dependencies have
-not been installed. Change to the app repo and run its install command first.
+appears after running the installer, the runtime installation failed or the
+helper is stale. Run the installer again and do not replace the helper with a
+Puppeteer one-liner.
 
 If a repo script fails with `Cannot find module .../.agents/skills/screenshot-tool`,
 the local skill wrapper is missing. Do not edit unrelated app files just to take a
@@ -176,14 +190,17 @@ Default `FILL_WAIT` is `1000`.
 
 If the target page crashes before the fill happens, the input selector is not the
 problem. Try diagnostic fallbacks such as `DISABLE_JAVASCRIPT=true`,
-`BLOCK_FONTS=true`, or `BLOCK_STYLES=true`. Only use these to isolate the crash or
-produce an emergency screenshot; they can change the rendered appearance.
+`SANITIZE_FONTS=true`, `BLOCK_FONTS=true`, or `BLOCK_STYLES=true`. Only use these
+to isolate the crash or produce an emergency screenshot; they can change the
+rendered appearance.
 
-If downloaded Chrome crashes on one page but not others, retry with the flags
-that are most useful in constrained Linux environments:
+The helper already launches Chrome with the constrained-Linux defaults that have
+been most reliable here: `--disable-dev-shm-usage`, `--disable-gpu`,
+`--single-process`, `WAIT_UNTIL=domcontentloaded`, and `ATTEMPTS=10`. If a page
+still flakes, raise `ATTEMPTS` rather than switching tools:
 
 ```bash
-WAIT_UNTIL=domcontentloaded CHROME_ARGS='--disable-dev-shm-usage --disable-gpu --single-process' node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/pricing
+ATTEMPTS=3 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/pricing
 ```
 
 ## Options
@@ -200,11 +217,14 @@ WAIT_UNTIL=domcontentloaded CHROME_ARGS='--disable-dev-shm-usage --disable-gpu -
 - `FILL_TEXT` or `FILL_VALUE`: text to enter into `FILL_SELECTOR`.
 - `FILL_WAIT`: milliseconds to wait after filling, default `1000`.
 - `DISABLE_JAVASCRIPT=true`: disable page JavaScript for diagnostic captures.
+- `SANITIZE_FONTS=true`: strip `@font-face` rules from HTML/CSS before Chrome
+  parses them for diagnostic captures.
 - `BLOCK_FONTS=true`: block font requests for diagnostic captures.
 - `BLOCK_STYLES=true`: block stylesheet requests for diagnostic captures.
-- `CHROME_ARGS`: extra Chrome flags, space-separated.
-- `WAIT_UNTIL`: Playwright `page.goto` wait mode, default `networkidle`; use
-  `domcontentloaded` for pages that crash or never become idle.
+- `CHROME_ARGS`: extra Chrome flags, space-separated. The helper already uses
+  `--disable-dev-shm-usage`, `--disable-gpu`, and `--single-process`.
+- `WAIT_UNTIL`: Playwright `page.goto` wait mode, default `domcontentloaded`.
+- `ATTEMPTS`: capture retry count for browser-process crashes, default `10`.
 - `LOCALE`: browser locale and `Accept-Language`, default `en-US`.
 - `CHROME_PATH`: explicit Chrome/Chromium executable.
 

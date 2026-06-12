@@ -4,15 +4,22 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 
 const requireFromApp = createRequire(path.join(process.cwd(), 'package.json'))
+const requireFromRuntime = createRequire(
+  '/tmp/opencode/screenshot-tool-runtime/package.json',
+)
 let chromium
 
 try {
   ;({ chromium } = requireFromApp('@playwright/test'))
 } catch (error) {
-  throw new Error(
-    'Cannot load @playwright/test from the application repo. Run this script from the app repo and install its dependencies first.',
-    { cause: error },
-  )
+  try {
+    ;({ chromium } = requireFromRuntime('@playwright/test'))
+  } catch {
+    throw new Error(
+      'Cannot load @playwright/test. Run screenshot-install first to install the standalone runtime.',
+      { cause: error },
+    )
+  }
 }
 
 const args = process.argv.slice(2)
@@ -50,13 +57,20 @@ const selector = process.env.SELECTOR
 const fillSelector = process.env.FILL_SELECTOR
 const fillText = process.env.FILL_TEXT ?? process.env.FILL_VALUE
 const fillWait = Number(process.env.FILL_WAIT ?? 1000)
+const defaultChromeArgs = [
+  '--disable-dev-shm-usage',
+  '--disable-gpu',
+  '--single-process',
+]
 const extraChromeArgs = (process.env.CHROME_ARGS ?? '')
   .split(/\s+/)
   .map((arg) => arg.trim())
   .filter(Boolean)
-const waitUntil = process.env.WAIT_UNTIL ?? 'networkidle'
+const waitUntil = process.env.WAIT_UNTIL ?? 'domcontentloaded'
+const attempts = Number(process.env.ATTEMPTS ?? 10)
 const blockFonts = process.env.BLOCK_FONTS === 'true'
 const blockStyles = process.env.BLOCK_STYLES === 'true'
+const sanitizeFonts = process.env.SANITIZE_FONTS === 'true'
 const disableJavaScript = process.env.DISABLE_JAVASCRIPT === 'true'
 const selectorMargin = 20
 const scrollPositions = (process.env.SCROLLS ?? '0')
@@ -131,15 +145,15 @@ await mkdir(outDir, { recursive: true })
 const executablePath = await chromePath()
 if (!executablePath) {
   throw new Error(
-    'No Chrome/Chromium executable found. Run `pnpm screenshot:install` or set CHROME_PATH.',
+    'No Chrome/Chromium executable found. Run screenshot-install or set CHROME_PATH.',
   )
 }
 
 const extraLibraryPath = '/tmp/opencode/browser-libs/usr/lib/x86_64-linux-gnu'
 const extraFontConfigPath = '/tmp/opencode/browser-libs/etc/fonts'
-const browser = await chromium.launch({
+const launchOptions = {
   executablePath,
-  args: ['--no-sandbox', ...extraChromeArgs],
+  args: ['--no-sandbox', ...defaultChromeArgs, ...extraChromeArgs],
   env: {
     ...process.env,
     LD_LIBRARY_PATH: [extraLibraryPath, process.env.LD_LIBRARY_PATH]
@@ -147,87 +161,137 @@ const browser = await chromium.launch({
       .join(':'),
     FONTCONFIG_PATH: process.env.FONTCONFIG_PATH ?? extraFontConfigPath,
   },
-})
+}
 
-try {
-  for (const width of viewportWidths) {
-    const page = await browser.newPage({
-      viewport: { width, height },
-      deviceScaleFactor: 1,
-      locale,
-      javaScriptEnabled: !disableJavaScript,
-      extraHTTPHeaders: {
-        'Accept-Language': `${locale},en;q=0.9`,
-      },
-    })
+function stripFontFaces(text) {
+  return text.replace(/@font-face\s*{[^}]*}/gi, '')
+}
 
-    if (blockFonts || blockStyles) {
-      await page.route('**/*', (route) => {
-        const request = route.request()
-        const resourceType = request.resourceType()
-        const requestUrl = request.url()
+async function capture({ sanitizeFontCss = false } = {}) {
+  const browser = await chromium.launch(launchOptions)
 
-        if (
-          (blockStyles && resourceType === 'stylesheet') ||
-          (blockFonts &&
-            (resourceType === 'font' || /\.(woff2?|ttf|otf)(\?.*)?$/i.test(requestUrl)))
-        ) {
-          route.abort()
-          return
-        }
-
-        route.continue()
+  try {
+    for (const width of viewportWidths) {
+      const page = await browser.newPage({
+        viewport: { width, height },
+        deviceScaleFactor: 1,
+        locale,
+        javaScriptEnabled: !disableJavaScript,
+        extraHTTPHeaders: {
+          'Accept-Language': `${locale},en;q=0.9`,
+        },
       })
-    }
 
-    await page.goto(url, { waitUntil })
-    await page.evaluate(() => document.fonts?.ready)
+      if (blockFonts || blockStyles || sanitizeFontCss) {
+        await page.route('**/*', async (route) => {
+          const request = route.request()
+          const resourceType = request.resourceType()
+          const requestUrl = request.url()
 
-    if (fillSelector) {
-      if (fillText === undefined) {
-        throw new Error('FILL_SELECTOR requires FILL_TEXT or FILL_VALUE')
+          if (
+            (blockStyles && resourceType === 'stylesheet') ||
+            (blockFonts &&
+              (resourceType === 'font' ||
+                /\.(woff2?|ttf|otf)(\?.*)?$/i.test(requestUrl)))
+          ) {
+            route.abort()
+            return
+          }
+
+          if (
+            sanitizeFontCss &&
+            (resourceType === 'document' || resourceType === 'stylesheet')
+          ) {
+            const response = await route.fetch()
+            const headers = response.headers()
+            const contentType = headers['content-type'] ?? ''
+
+            if (/\b(html|css)\b/i.test(contentType)) {
+              delete headers['content-length']
+              await route.fulfill({
+                status: response.status(),
+                headers,
+                body: stripFontFaces(await response.text()),
+              })
+              return
+            }
+          }
+
+          route.continue()
+        })
       }
 
-      const field = page.locator(fillSelector).first()
-      await field.scrollIntoViewIfNeeded()
-      await field.fill(fillText)
-      await page.waitForTimeout(fillWait)
-    }
+      await page.goto(url, { waitUntil })
+      await page.evaluate(() => document.fonts?.ready).catch(() => {})
 
-    for (const scrollY of scrollPositions) {
-      const scrollSuffix =
-        scrollPositions.length > 1 || scrollY > 0 ? `-y${scrollY}` : ''
-      const file = path.join(outDir, `${safePath}-${width}${scrollSuffix}.png`)
-
-      await page.evaluate((nextScrollY) => window.scrollTo(0, nextScrollY), scrollY)
-      await page.waitForTimeout(2000)
-
-      if (selector) {
-        const target = page.locator(selector).first()
-        await target.scrollIntoViewIfNeeded()
-        await page.waitForTimeout(2000)
-        const box = await target.boundingBox()
-        if (!box) {
-          throw new Error(`Selector is not visible: ${selector}`)
+      if (fillSelector) {
+        if (fillText === undefined) {
+          throw new Error('FILL_SELECTOR requires FILL_TEXT or FILL_VALUE')
         }
 
-        await page.screenshot({
-          path: file,
-          clip: {
-            x: Math.max(0, box.x - selectorMargin),
-            y: Math.max(0, box.y - selectorMargin),
-            width: box.width + selectorMargin * 2,
-            height: box.height + selectorMargin * 2,
-          },
-        })
-      } else {
-        await page.screenshot({ path: file, fullPage })
+        const field = page.locator(fillSelector).first()
+        await field.scrollIntoViewIfNeeded()
+        await field.fill(fillText)
+        await page.waitForTimeout(fillWait)
       }
 
-      console.log(`${width}px @ ${scrollY}px -> ${file}`)
+      for (const scrollY of scrollPositions) {
+        const scrollSuffix =
+          scrollPositions.length > 1 || scrollY > 0 ? `-y${scrollY}` : ''
+        const file = path.join(outDir, `${safePath}-${width}${scrollSuffix}.png`)
+
+        await page.evaluate((nextScrollY) => window.scrollTo(0, nextScrollY), scrollY)
+        await page.waitForTimeout(2000)
+
+        if (selector) {
+          const target = page.locator(selector).first()
+          await target.scrollIntoViewIfNeeded()
+          await page.waitForTimeout(2000)
+          const box = await target.boundingBox()
+          if (!box) {
+            throw new Error(`Selector is not visible: ${selector}`)
+          }
+
+          await page.screenshot({
+            path: file,
+            clip: {
+              x: Math.max(0, box.x - selectorMargin),
+              y: Math.max(0, box.y - selectorMargin),
+              width: box.width + selectorMargin * 2,
+              height: box.height + selectorMargin * 2,
+            },
+          })
+        } else {
+          await page.screenshot({ path: file, fullPage })
+        }
+
+        console.log(`${width}px @ ${scrollY}px -> ${file}`)
+      }
+      await page.close()
     }
-    await page.close()
+  } finally {
+    await browser.close()
   }
-} finally {
-  await browser.close()
+}
+
+let lastError
+
+for (let attempt = 1; attempt <= attempts; attempt += 1) {
+  try {
+    await capture({ sanitizeFontCss: sanitizeFonts })
+    lastError = undefined
+    break
+  } catch (error) {
+    lastError = error
+
+    if (attempt === attempts) break
+
+    console.warn(
+      `Screenshot attempt ${attempt} failed; retrying: ${error.message}`,
+    )
+  }
+}
+
+if (lastError) {
+  throw lastError
 }
