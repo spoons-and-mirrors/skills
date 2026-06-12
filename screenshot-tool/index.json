@@ -1,0 +1,12 @@
+{
+  "skills": [
+    {
+      "name": "screenshot-tool",
+      "files": [
+        "SKILL.md",
+        "scripts/screenshot-install.mjs",
+        "scripts/screenshot.mjs"
+      ]
+    }
+  ]
+}
