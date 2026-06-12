@@ -1,6 +1,6 @@
 ---
 name: screenshot-tool
-description: Capture reliable page and component screenshots with the repo Playwright screenshot scripts, including browser installation and selector-targeted screenshots. Use when the user asks for screenshots, visual verification, screenshot install, Playwright capture, fixed-scroll screenshots, or component-only screenshots.
+description: Capture reliable page and component screenshots. Read this skill when the user explicitly asks for screenshots.
 ---
 
 # Screenshot Tool
