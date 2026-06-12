@@ -78,6 +78,12 @@ the same helper. If those work, the target page is crashing the browser during
 render; stop treating it as an install problem and inspect the page-specific CSS,
 fonts, markup, or scripts.
 
+Transient retry messages such as `Screenshot attempt 1 failed during page load;
+retrying...` mean Chrome closed while rendering the page. The helper retries
+because some local pages are flaky in downloaded Chrome on constrained Linux,
+especially around complex text/font rendering. The screenshot is valid if a later
+attempt saves the file; the full error is only useful when all attempts fail.
+
 ```bash
 OUT_DIR=/tmp/screenshots WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/
 OUT_DIR=/tmp/screenshots WIDTHS=768 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://example.com

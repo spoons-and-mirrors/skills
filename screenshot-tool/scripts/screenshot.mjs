@@ -281,9 +281,7 @@ for (let attempt = 1; attempt <= attempts; attempt += 1) {
 
     if (attempt === attempts) break
 
-    console.warn(
-      `Screenshot attempt ${attempt} failed; retrying: ${error.message}`,
-    )
+    console.warn(`Screenshot attempt ${attempt} failed during page load; retrying...`)
   }
 }
 
