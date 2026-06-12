@@ -34,6 +34,11 @@ const packages = [
   'libxres1',
   'libdatrie1',
   'libgraphite2-3',
+  'fontconfig',
+  'fontconfig-config',
+  'fonts-dejavu-core',
+  'fonts-dejavu-mono',
+  'fonts-liberation',
 ]
 
 async function executable(name) {
@@ -70,14 +75,30 @@ function run(command, args, options = {}) {
 }
 
 await mkdir(browserRoot, { recursive: true })
-await run('pnpm', [
-  'dlx',
-  '@puppeteer/browsers',
-  'install',
-  'chrome@stable',
-  '--path',
-  browserRoot,
-])
+const pnpm = await executable('pnpm')
+const npx = await executable('npx')
+
+if (pnpm) {
+  await run(pnpm, [
+    'dlx',
+    '@puppeteer/browsers',
+    'install',
+    'chrome@stable',
+    '--path',
+    browserRoot,
+  ])
+} else if (npx) {
+  await run(npx, [
+    '--yes',
+    '@puppeteer/browsers',
+    'install',
+    'chrome@stable',
+    '--path',
+    browserRoot,
+  ])
+} else {
+  throw new Error('Cannot install Chrome: neither pnpm nor npx was found.')
+}
 
 if (process.platform !== 'linux') {
   process.exit(0)

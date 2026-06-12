@@ -1,8 +1,19 @@
 import { access, mkdir, readdir } from 'node:fs/promises'
 import { constants } from 'node:fs'
+import { createRequire } from 'node:module'
 import path from 'node:path'
 
-import { chromium } from '@playwright/test'
+const requireFromApp = createRequire(path.join(process.cwd(), 'package.json'))
+let chromium
+
+try {
+  ;({ chromium } = requireFromApp('@playwright/test'))
+} catch (error) {
+  throw new Error(
+    'Cannot load @playwright/test from the application repo. Run this script from the app repo and install its dependencies first.',
+    { cause: error },
+  )
+}
 
 const args = process.argv.slice(2)
 const baseUrl = process.env.BASE_URL ?? 'http://127.0.0.1:4173'
@@ -26,6 +37,16 @@ const outDir = process.env.OUT_DIR ?? 'screenshots'
 const fullPage = process.env.FULL_PAGE === 'true'
 const locale = process.env.LOCALE ?? 'en-US'
 const selector = process.env.SELECTOR
+const fillSelector = process.env.FILL_SELECTOR
+const fillText = process.env.FILL_TEXT ?? process.env.FILL_VALUE
+const fillWait = Number(process.env.FILL_WAIT ?? 1000)
+const extraChromeArgs = (process.env.CHROME_ARGS ?? '')
+  .split(/\s+/)
+  .map((arg) => arg.trim())
+  .filter(Boolean)
+const blockFonts = process.env.BLOCK_FONTS === 'true'
+const blockStyles = process.env.BLOCK_STYLES === 'true'
+const disableJavaScript = process.env.DISABLE_JAVASCRIPT === 'true'
 const selectorMargin = 20
 const scrollPositions = (process.env.SCROLLS ?? '0')
   .split(',')
@@ -104,14 +125,16 @@ if (!executablePath) {
 }
 
 const extraLibraryPath = '/tmp/opencode/browser-libs/usr/lib/x86_64-linux-gnu'
+const extraFontConfigPath = '/tmp/opencode/browser-libs/etc/fonts'
 const browser = await chromium.launch({
   executablePath,
-  args: ['--no-sandbox'],
+  args: ['--no-sandbox', ...extraChromeArgs],
   env: {
     ...process.env,
     LD_LIBRARY_PATH: [extraLibraryPath, process.env.LD_LIBRARY_PATH]
       .filter(Boolean)
       .join(':'),
+    FONTCONFIG_PATH: process.env.FONTCONFIG_PATH ?? extraFontConfigPath,
   },
 })
 
@@ -121,12 +144,43 @@ try {
       viewport: { width, height },
       deviceScaleFactor: 1,
       locale,
+      javaScriptEnabled: !disableJavaScript,
       extraHTTPHeaders: {
         'Accept-Language': `${locale},en;q=0.9`,
       },
     })
+
+    if (blockFonts || blockStyles) {
+      await page.route('**/*', (route) => {
+        const request = route.request()
+        const resourceType = request.resourceType()
+        const requestUrl = request.url()
+
+        if (
+          (blockStyles && resourceType === 'stylesheet') ||
+          (blockFonts && (resourceType === 'font' || /\.(woff2?|ttf|otf)(\?.*)?$/i.test(requestUrl)))
+        ) {
+          route.abort()
+          return
+        }
+
+        route.continue()
+      })
+    }
+
     await page.goto(url, { waitUntil: 'networkidle' })
     await page.evaluate(() => document.fonts?.ready)
+
+    if (fillSelector) {
+      if (fillText === undefined) {
+        throw new Error('FILL_SELECTOR requires FILL_TEXT or FILL_VALUE')
+      }
+
+      const field = page.locator(fillSelector).first()
+      await field.scrollIntoViewIfNeeded()
+      await field.fill(fillText)
+      await page.waitForTimeout(fillWait)
+    }
 
     for (const scrollY of scrollPositions) {
       const scrollSuffix =
