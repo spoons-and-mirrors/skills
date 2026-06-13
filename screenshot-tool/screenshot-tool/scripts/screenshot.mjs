@@ -1,9 +1,10 @@
-import { access, mkdir, readdir } from 'node:fs/promises'
+import { access, mkdir, readdir, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { delimiter, join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createServer } from 'node:net'
 
 const args = process.argv.slice(2)
 const baseUrl = process.env.BASE_URL
@@ -28,6 +29,7 @@ const widths = argWidths.length ? argWidths : parseNumbers(process.env.WIDTHS ??
 const heights = parseNumbers(process.env.HEIGHTS ?? '')
 const height = numberEnv('HEIGHT', 900)
 const waitMs = numberEnv('WAIT_MS', numberEnv('TIMEOUT_MS', 5000))
+const settleMs = numberEnv('SETTLE_MS', 1000, true)
 const commandTimeoutMs = numberEnv('COMMAND_TIMEOUT_MS', Math.max(waitMs + 15000, 30000))
 const deviceScaleFactor = numberEnv('DEVICE_SCALE_FACTOR', 1)
 const outDir = process.env.OUT_DIR ?? process.env.OUTPUT_DIR ?? 'screenshots'
@@ -38,17 +40,27 @@ const autoInstall = process.env.AUTO_INSTALL !== '0' && process.env.AUTO_INSTALL
 const hideScrollbars = boolEnv('HIDE_SCROLLBARS')
 const virtualTimeBudget = numberEnv('VIRTUAL_TIME_BUDGET', 0)
 const extraChromeArgs = splitArgs(process.env.CHROME_ARGS ?? '')
-const unsupportedAdvancedOptions = [
-  ['SELECTOR', process.env.SELECTOR],
-  ['FILL_SELECTOR', process.env.FILL_SELECTOR],
-  ['FULL_PAGE', process.env.FULL_PAGE === 'true' ? 'true' : ''],
-].filter(([, value]) => value)
+const selector = process.env.SELECTOR ?? ''
+const fullPage = boolEnv('FULL_PAGE')
+const scrollPage = boolEnv('SCROLL_PAGE') || boolEnv('SCROLL')
+const padding = numberEnv('PADDING', numberEnv('COMPONENT_PADDING', 20), true)
+const clickSelector = process.env.CLICK_SELECTOR ?? ''
+const focusSelector = process.env.FOCUS_SELECTOR ?? ''
+const typeSelector = process.env.TYPE_SELECTOR ?? process.env.FILL_SELECTOR ?? ''
+const typeText = process.env.TYPE_TEXT ?? process.env.FILL_TEXT ?? ''
+const actionWaitMs = numberEnv('ACTION_WAIT_MS', 500, true)
+const clearBeforeType =
+  process.env.CLEAR_BEFORE_TYPE === undefined
+    ? Boolean(process.env.FILL_SELECTOR)
+    : boolEnv('CLEAR_BEFORE_TYPE')
+const hasActions = Boolean(clickSelector || focusSelector || typeSelector || typeText)
 
-if (unsupportedAdvancedOptions.length) {
-  const names = unsupportedAdvancedOptions.map(([name]) => name).join(', ')
-  throw new Error(
-    `${names} requires advanced browser automation. The default screenshot path uses Chrome CLI for viewport screenshots only.`,
-  )
+if (typeText && !typeSelector && !focusSelector && !clickSelector) {
+  throw new Error('TYPE_TEXT requires TYPE_SELECTOR, FOCUS_SELECTOR, or CLICK_SELECTOR.')
+}
+
+if (selector && fullPage) {
+  throw new Error('Use SELECTOR or FULL_PAGE, not both.')
 }
 
 if (!widths.length) throw new Error('No viewport widths provided')
@@ -57,6 +69,7 @@ if (heights.length && heights.length !== widths.length) {
 }
 
 await mkdir(outDir, { recursive: true })
+await ensureFontConfig()
 
 let chrome = await chromePath()
 if (!chrome && autoInstall) {
@@ -72,16 +85,32 @@ if (!chrome) {
 
 const successes = []
 const failures = []
+let installerRetried = false
 
 for (const [index, width] of widths.entries()) {
   const viewportHeight = heights[index] ?? height
-  const file = join(outDir, `${safeName(targetUrl)}-${width}x${viewportHeight}.png`)
+  const file = outputFile(width, viewportHeight)
 
   try {
-    await captureViewport({ chrome, file, width, height: viewportHeight })
+    await capture({ chrome, file, width, height: viewportHeight })
     successes.push(file)
     console.log(`${width}x${viewportHeight} -> ${file}`)
   } catch (error) {
+    if (autoInstall && !installerRetried && missingRuntimeLibrary(error)) {
+      installerRetried = true
+      await runInstaller()
+      chrome = (await chromePath()) ?? chrome
+
+      try {
+        await capture({ chrome, file, width, height: viewportHeight })
+        successes.push(file)
+        console.log(`${width}x${viewportHeight} -> ${file}`)
+        continue
+      } catch (retryError) {
+        error = retryError
+      }
+    }
+
     failures.push({ width, height: viewportHeight, file, error })
     console.error(`${width}x${viewportHeight} failed -> ${file}`)
     console.error(error.message)
@@ -96,6 +125,15 @@ if (failures.length) {
 
 if (!successes.length || (strict && failures.length)) {
   process.exitCode = 1
+}
+
+async function capture({ chrome, file, width, height }) {
+  if (selector || fullPage || hasActions) {
+    await captureWithCdp({ chrome, file, width, height })
+    return
+  }
+
+  await captureViewport({ chrome, file, width, height })
 }
 
 async function captureViewport({ chrome, file, width, height }) {
@@ -124,6 +162,279 @@ async function captureViewport({ chrome, file, width, height }) {
   ]
 
   await runChrome(chrome, chromeArgs)
+}
+
+async function captureWithCdp({ chrome, file, width, height }) {
+  const port = await openPort()
+  const chromeArgs = [
+    '--headless=new',
+    '--no-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-gpu',
+    '--disable-background-networking',
+    '--disable-component-update',
+    '--disable-default-apps',
+    '--disable-extensions',
+    '--disable-sync',
+    '--metrics-recording-only',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--remote-allow-origins=*',
+    `--remote-debugging-port=${port}`,
+    `--window-size=${width},${height}`,
+    `--force-device-scale-factor=${deviceScaleFactor}`,
+    `--lang=${locale}`,
+    ...(hideScrollbars ? ['--hide-scrollbars'] : []),
+    ...extraChromeArgs,
+    'about:blank',
+  ]
+
+  const child = spawn(chrome, chromeArgs, { env: chromeEnv() })
+  let stderr = ''
+  let captureDone = false
+  const timeout = setTimeout(() => child.kill('SIGTERM'), commandTimeoutMs)
+
+  child.stderr?.on('data', (chunk) => {
+    stderr += chunk
+  })
+
+  const childExit = new Promise((resolvePromise, reject) => {
+    child.on('exit', (code, signal) => {
+      if (captureDone) resolvePromise()
+      else reject(new Error(`Chrome exited before capture completed (${signal ?? code})`))
+    })
+    child.on('error', reject)
+  })
+
+  try {
+    await Promise.race([captureWithOpenBrowser(), childExit])
+  } catch (error) {
+    const details = [error.message, stderr.trim() ? `stderr:\n${stderr.trim()}` : ''].filter(Boolean)
+    throw new Error(details.join('\n\n'))
+  } finally {
+    captureDone = true
+    clearTimeout(timeout)
+    child.kill('SIGTERM')
+    setTimeout(() => child.kill('SIGKILL'), 2000).unref()
+  }
+
+  async function captureWithOpenBrowser() {
+    const page = await waitForPage(port)
+    const cdp = await connectCdp(page.webSocketDebuggerUrl)
+
+    try {
+      await cdp.send('Page.enable')
+      await cdp.send('Runtime.enable')
+      await cdp.send('Emulation.setDeviceMetricsOverride', {
+        width,
+        height,
+        deviceScaleFactor,
+        mobile: false,
+      })
+
+      const loaded = cdp.waitFor('Page.loadEventFired', waitMs)
+      await cdp.send('Page.navigate', { url })
+      await loaded.catch(() => null)
+      if (settleMs > 0) await sleep(settleMs)
+
+      if (hideScrollbars) await hidePageScrollbars(cdp)
+      if (hasActions) await performActions(cdp)
+      if (scrollPage) await scrollThroughPage(cdp)
+
+      const data = selector
+        ? await captureSelector(cdp, selector)
+        : await captureFullPage(cdp, width)
+
+      await writeFile(file, data, 'base64')
+    } finally {
+      await cdp.close()
+    }
+  }
+}
+
+async function captureFullPage(cdp, viewportWidth) {
+  const { contentSize } = await cdp.send('Page.getLayoutMetrics')
+  const clip = {
+    x: 0,
+    y: 0,
+    width: Math.max(viewportWidth, Math.ceil(contentSize.width)),
+    height: Math.ceil(contentSize.height),
+    scale: 1,
+  }
+  const { data } = await cdp.send('Page.captureScreenshot', {
+    format: 'png',
+    fromSurface: true,
+    captureBeyondViewport: true,
+    clip,
+  })
+
+  return data
+}
+
+async function captureSelector(cdp, cssSelector) {
+  const literal = JSON.stringify(cssSelector)
+  const result = await cdp.send('Runtime.evaluate', {
+    returnByValue: true,
+    expression: `(() => {
+      const element = document.querySelector(${literal});
+      if (!element) return { error: 'No element matched SELECTOR' };
+      element.scrollIntoView({ block: 'center', inline: 'center' });
+      const rect = element.getBoundingClientRect();
+      return {
+        x: rect.left + window.scrollX,
+        y: rect.top + window.scrollY,
+        width: rect.width,
+        height: rect.height,
+      };
+    })()`,
+  })
+  const rect = result.result?.value
+
+  if (!rect || rect.error) throw new Error(`${rect?.error ?? 'Could not resolve SELECTOR'}: ${cssSelector}`)
+  if (rect.width <= 0 || rect.height <= 0) throw new Error(`SELECTOR has no visible box: ${cssSelector}`)
+
+  await sleep(250)
+  const { contentSize } = await cdp.send('Page.getLayoutMetrics')
+  const x = Math.max(0, Math.floor(rect.x - padding))
+  const y = Math.max(0, Math.floor(rect.y - padding))
+  const width = Math.min(Math.ceil(rect.width + padding * 2), Math.ceil(contentSize.width - x))
+  const height = Math.min(Math.ceil(rect.height + padding * 2), Math.ceil(contentSize.height - y))
+  const { data } = await cdp.send('Page.captureScreenshot', {
+    format: 'png',
+    fromSurface: true,
+    captureBeyondViewport: true,
+    clip: { x, y, width, height, scale: 1 },
+  })
+
+  return data
+}
+
+async function performActions(cdp) {
+  const targetForType = typeSelector || focusSelector || clickSelector
+  const shouldTypeBeforeClick = Boolean(typeSelector || focusSelector)
+
+  if (clickSelector && !shouldTypeBeforeClick) await clickElement(cdp, clickSelector)
+  if (targetForType && (typeSelector || focusSelector || !clickSelector)) {
+    await focusElement(cdp, targetForType)
+  }
+
+  if (clearBeforeType && targetForType) await clearElement(cdp, targetForType)
+  if (typeText) await cdp.send('Input.insertText', { text: typeText })
+  if (clickSelector && shouldTypeBeforeClick) await clickElement(cdp, clickSelector)
+  if (actionWaitMs > 0) await sleep(actionWaitMs)
+}
+
+async function clickElement(cdp, cssSelector) {
+  const point = await elementCenter(cdp, cssSelector)
+  await cdp.send('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x: point.x,
+    y: point.y,
+    button: 'none',
+  })
+  await cdp.send('Input.dispatchMouseEvent', {
+    type: 'mousePressed',
+    x: point.x,
+    y: point.y,
+    button: 'left',
+    clickCount: 1,
+  })
+  await cdp.send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased',
+    x: point.x,
+    y: point.y,
+    button: 'left',
+    clickCount: 1,
+  })
+}
+
+async function focusElement(cdp, cssSelector) {
+  const literal = JSON.stringify(cssSelector)
+  const result = await cdp.send('Runtime.evaluate', {
+    returnByValue: true,
+    expression: `(() => {
+      const element = document.querySelector(${literal});
+      if (!element) return { error: 'No element matched selector' };
+      element.scrollIntoView({ block: 'center', inline: 'center' });
+      if (typeof element.focus !== 'function') return { error: 'Element is not focusable' };
+      element.focus({ preventScroll: false });
+      return { ok: true };
+    })()`,
+  })
+  const value = result.result?.value
+  if (!value || value.error) throw new Error(`${value?.error ?? 'Could not focus selector'}: ${cssSelector}`)
+}
+
+async function clearElement(cdp, cssSelector) {
+  const literal = JSON.stringify(cssSelector)
+  const result = await cdp.send('Runtime.evaluate', {
+    returnByValue: true,
+    expression: `(() => {
+      const element = document.querySelector(${literal});
+      if (!element) return { error: 'No element matched selector' };
+      if ('value' in element) element.value = '';
+      else if (element.isContentEditable) element.textContent = '';
+      else return { error: 'Element cannot be cleared' };
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+      return { ok: true };
+    })()`,
+  })
+  const value = result.result?.value
+  if (!value || value.error) throw new Error(`${value?.error ?? 'Could not clear selector'}: ${cssSelector}`)
+}
+
+async function elementCenter(cdp, cssSelector) {
+  const literal = JSON.stringify(cssSelector)
+  const result = await cdp.send('Runtime.evaluate', {
+    returnByValue: true,
+    expression: `(() => {
+      const element = document.querySelector(${literal});
+      if (!element) return { error: 'No element matched selector' };
+      element.scrollIntoView({ block: 'center', inline: 'center' });
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return { error: 'Selector has no visible box' };
+      return {
+        x: Math.round(rect.left + rect.width / 2),
+        y: Math.round(rect.top + rect.height / 2),
+      };
+    })()`,
+  })
+  const point = result.result?.value
+  if (!point || point.error) throw new Error(`${point?.error ?? 'Could not resolve selector'}: ${cssSelector}`)
+  return point
+}
+
+async function hidePageScrollbars(cdp) {
+  await cdp.send('Runtime.evaluate', {
+    expression: `(() => {
+      const style = document.createElement('style');
+      style.textContent = '::-webkit-scrollbar{display:none!important}html,body{scrollbar-width:none!important}';
+      document.documentElement.appendChild(style);
+    })()`,
+  })
+}
+
+async function scrollThroughPage(cdp) {
+  await cdp.send('Runtime.evaluate', {
+    awaitPromise: true,
+    expression: `new Promise((resolve) => {
+      let lastY = -1;
+      const step = Math.max(window.innerHeight * 0.8, 400);
+      const tick = () => {
+        const maxY = document.documentElement.scrollHeight - window.innerHeight;
+        if (window.scrollY >= maxY || window.scrollY === lastY) {
+          window.scrollTo(0, 0);
+          setTimeout(resolve, 250);
+          return;
+        }
+        lastY = window.scrollY;
+        window.scrollBy(0, step);
+        setTimeout(tick, 150);
+      };
+      tick();
+    })`,
+  })
 }
 
 function runChrome(command, chromeArgs) {
@@ -174,6 +485,134 @@ function runChrome(command, chromeArgs) {
   })
 }
 
+async function openPort() {
+  return new Promise((resolvePromise, reject) => {
+    const server = createServer()
+    server.on('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      server.close(() => resolvePromise(address.port))
+    })
+  })
+}
+
+async function waitForPage(port) {
+  const deadline = Date.now() + commandTimeoutMs
+  let lastError
+
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/json/list`)
+      const pages = await response.json()
+      const page = pages.find((entry) => entry.type === 'page' && entry.webSocketDebuggerUrl)
+      if (page) return page
+    } catch (error) {
+      lastError = error
+    }
+
+    await sleep(100)
+  }
+
+  throw new Error(`Chrome DevTools did not start on port ${port}: ${lastError?.message ?? 'timeout'}`)
+}
+
+async function connectCdp(url) {
+  const socket = new WebSocket(url)
+  const pending = new Map()
+  const waiters = new Map()
+  let nextId = 1
+
+  socket.addEventListener('message', handleMessage)
+  socket.addEventListener('close', () => rejectAll(new Error('Chrome DevTools socket closed')))
+  socket.addEventListener('error', () => rejectAll(new Error('Chrome DevTools socket error')))
+
+  await new Promise((resolvePromise, reject) => {
+    socket.addEventListener('open', resolvePromise, { once: true })
+    socket.addEventListener('error', reject, { once: true })
+  })
+
+  return { send, waitFor, close }
+
+  function send(method, params = {}) {
+    const id = nextId++
+    const payload = JSON.stringify({ id, method, params })
+
+    return new Promise((resolvePromise, reject) => {
+      const timeout = setTimeout(() => {
+        pending.delete(id)
+        reject(new Error(`${method} timed out after ${commandTimeoutMs}ms`))
+      }, commandTimeoutMs)
+      pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timeout)
+          resolvePromise(value)
+        },
+        reject: (error) => {
+          clearTimeout(timeout)
+          reject(error)
+        },
+      })
+      socket.send(payload)
+    })
+  }
+
+  function waitFor(method, timeoutMs) {
+    return new Promise((resolvePromise, reject) => {
+      const waiter = (params) => {
+        clearTimeout(timeout)
+        resolvePromise(params)
+      }
+      const timeout = setTimeout(() => {
+        removeWaiter(method, waiter)
+        reject(new Error(`${method} timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
+
+      addWaiter(method, waiter)
+    })
+  }
+
+  function addWaiter(method, waiter) {
+    const current = waiters.get(method) ?? []
+    current.push(waiter)
+    waiters.set(method, current)
+  }
+
+  function removeWaiter(method, waiterToRemove) {
+    const current = waiters.get(method) ?? []
+    waiters.set(
+      method,
+      current.filter((waiter) => waiter !== waiterToRemove),
+    )
+  }
+
+  function handleMessage(event) {
+    const message = JSON.parse(event.data)
+
+    if (message.id) {
+      const request = pending.get(message.id)
+      if (!request) return
+
+      pending.delete(message.id)
+      if (message.error) request.reject(new Error(message.error.message))
+      else request.resolve(message.result ?? {})
+      return
+    }
+
+    const current = waiters.get(message.method) ?? []
+    waiters.delete(message.method)
+    for (const waiter of current) waiter(message.params ?? {})
+  }
+
+  function rejectAll(error) {
+    for (const request of pending.values()) request.reject(error)
+    pending.clear()
+  }
+
+  function close() {
+    socket.close()
+  }
+}
+
 async function runInstaller() {
   const installer = resolve(dirname(fileURLToPath(import.meta.url)), 'screenshot-install.mjs')
   await new Promise((resolvePromise, reject) => {
@@ -185,6 +624,32 @@ async function runInstaller() {
       else reject(new Error(`screenshot-install.mjs exited with ${code}`))
     })
   })
+}
+
+async function ensureFontConfig() {
+  const fontRoot = '/tmp/opencode/browser-libs/usr/share/fonts'
+  const configDir = '/tmp/opencode/browser-libs/etc/fonts'
+  const cacheDir = '/tmp/opencode/font-cache'
+  const configFile = '/tmp/opencode/browser-libs/opencode-fonts.conf'
+
+  try {
+    await access(fontRoot, constants.R_OK)
+  } catch {
+    return
+  }
+
+  await mkdir(cacheDir, { recursive: true })
+  await writeFile(
+    configFile,
+    `<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<fontconfig>
+  <dir>${fontRoot}</dir>
+  <cachedir>${cacheDir}</cachedir>
+  <include ignore_missing="yes">${configDir}/conf.d</include>
+</fontconfig>
+`,
+  )
 }
 
 async function chromePath() {
@@ -254,12 +719,14 @@ async function executable(pathname) {
 function chromeEnv() {
   const extraLibraryPath = '/tmp/opencode/browser-libs/usr/lib/x86_64-linux-gnu'
   const extraFontConfigPath = '/tmp/opencode/browser-libs/etc/fonts'
+  const extraFontConfigFile = '/tmp/opencode/browser-libs/opencode-fonts.conf'
 
   return {
     ...process.env,
     LD_LIBRARY_PATH: [extraLibraryPath, process.env.LD_LIBRARY_PATH]
       .filter(Boolean)
       .join(':'),
+    FONTCONFIG_FILE: process.env.FONTCONFIG_FILE ?? extraFontConfigFile,
     FONTCONFIG_PATH: process.env.FONTCONFIG_PATH ?? extraFontConfigPath,
   }
 }
@@ -271,9 +738,9 @@ function parseNumbers(value) {
     .filter((entry) => Number.isInteger(entry) && entry > 0)
 }
 
-function numberEnv(name, fallback) {
+function numberEnv(name, fallback, allowZero = false) {
   const value = Number(process.env[name])
-  return Number.isFinite(value) && value > 0 ? value : fallback
+  return Number.isFinite(value) && (value > 0 || (allowZero && value === 0)) ? value : fallback
 }
 
 function boolEnv(name) {
@@ -285,6 +752,20 @@ function splitArgs(value) {
     .split(/\s+/)
     .map((entry) => entry.trim())
     .filter(Boolean)
+}
+
+function outputFile(width, height) {
+  if (selector) return join(outDir, `${safeName(targetUrl)}-component-${width}x${height}.png`)
+  if (fullPage) return join(outDir, `${safeName(targetUrl)}-${width}xfull.png`)
+  return join(outDir, `${safeName(targetUrl)}-${width}x${height}.png`)
+}
+
+function sleep(ms) {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
+}
+
+function missingRuntimeLibrary(error) {
+  return /error while loading shared libraries|cannot open shared object file/i.test(error?.message ?? '')
 }
 
 function safeName(parsedUrl) {
