@@ -25,8 +25,8 @@ if (!rawTarget.startsWith('http') && !baseUrl) {
 const url = rawTarget.startsWith('http') ? rawTarget : new URL(rawTarget, baseUrl).href
 const targetUrl = new URL(url)
 const argWidths = args.filter((arg) => /^\d+$/.test(arg)).map(Number)
-const widths = argWidths.length ? argWidths : parseNumbers(process.env.WIDTHS ?? '390,768,1440')
-const heights = parseNumbers(process.env.HEIGHTS ?? '')
+const widths = argWidths.length ? argWidths : parseNumbers(process.env.WIDTHS ?? '390,768,1440', 'WIDTHS')
+const heights = parseNumbers(process.env.HEIGHTS ?? '', 'HEIGHTS')
 const height = numberEnv('HEIGHT', 900)
 const waitMs = numberEnv('WAIT_MS', numberEnv('TIMEOUT_MS', 5000))
 const settleMs = numberEnv('SETTLE_MS', 1000, true)
@@ -46,6 +46,7 @@ const scrollPage = boolEnv('SCROLL_PAGE') || boolEnv('SCROLL')
 const waitForSelector = process.env.WAIT_FOR_SELECTOR ?? ''
 const waitForTimeoutMs = numberEnv('WAIT_FOR_TIMEOUT_MS', waitMs)
 const padding = numberEnv('PADDING', numberEnv('COMPONENT_PADDING', 20), true)
+const preClickSelector = process.env.PRE_CLICK_SELECTOR ?? ''
 const clickSelector = process.env.CLICK_SELECTOR ?? ''
 const focusSelector = process.env.FOCUS_SELECTOR ?? ''
 const hoverSelector = process.env.HOVER_SELECTOR ?? ''
@@ -60,7 +61,9 @@ const clearBeforeType =
   process.env.CLEAR_BEFORE_TYPE === undefined
     ? Boolean(process.env.FILL_SELECTOR)
     : boolEnv('CLEAR_BEFORE_TYPE')
-const hasActions = Boolean(clickSelector || focusSelector || hoverSelector || typeSelector || typeText || pressKey)
+const hasActions = Boolean(
+  preClickSelector || clickSelector || focusSelector || hoverSelector || typeSelector || typeText || pressKey,
+)
 const cdpNeeded = Boolean(selector || fullPage || scrollPage || waitForSelector || hasActions)
 
 if (typeText && !typeSelector && !focusSelector && !clickSelector) {
@@ -84,7 +87,7 @@ const successes = []
 const failures = []
 
 if (dryRun) {
-  console.log(JSON.stringify(summary({ ok: true, dryRun: true, planned: captures }), null, 2))
+  console.log(JSON.stringify(dryRunSummary(), null, 2))
   process.exit(0)
 }
 
@@ -257,7 +260,11 @@ async function captureWithCdp({ chrome, file, width, height }) {
       })
 
       const loaded = cdp.waitFor('Page.loadEventFired', waitMs)
-      await cdp.send('Page.navigate', { url })
+      const navigation = await cdp.send('Page.navigate', { url })
+      if (navigation.errorText) {
+        await loaded.catch(() => null)
+        throw new Error(`Navigation failed: ${navigation.errorText}: ${url}`)
+      }
       await loaded.catch(() => null)
       if (settleMs > 0) await sleep(settleMs)
 
@@ -316,11 +323,20 @@ async function waitForElement(cdp, cssSelector, timeoutMs) {
     const result = await cdp.send('Runtime.evaluate', {
       returnByValue: true,
       expression: `(() => {
-        const element = document.querySelector(${literal});
-        if (!element) return { ok: false, error: 'not found' };
-        const rect = element.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) return { ok: false, error: 'not visible' };
-        return { ok: true };
+        const elements = [...document.querySelectorAll(${literal})];
+        if (!elements.length) return { ok: false, error: 'not found' };
+        for (const element of elements) {
+          if (visibleRect(element)) return { ok: true };
+        }
+        return { ok: false, error: 'not visible' };
+
+        function visibleRect(element) {
+          const rect = element.getBoundingClientRect();
+          const style = window.getComputedStyle(element);
+          if (rect.width <= 0 || rect.height <= 0) return null;
+          if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) <= 0) return null;
+          return rect;
+        }
       })()`,
     })
     const value = result.result?.value
@@ -338,16 +354,29 @@ async function captureSelector(cdp, cssSelector) {
   const result = await cdp.send('Runtime.evaluate', {
     returnByValue: true,
     expression: `(() => {
-      const element = document.querySelector(${literal});
-      if (!element) return { error: 'No element matched SELECTOR' };
-      element.scrollIntoView({ block: 'center', inline: 'center' });
-      const rect = element.getBoundingClientRect();
-      return {
-        x: rect.left + window.scrollX,
-        y: rect.top + window.scrollY,
-        width: rect.width,
-        height: rect.height,
-      };
+      const elements = [...document.querySelectorAll(${literal})];
+      if (!elements.length) return { error: 'No element matched SELECTOR' };
+      for (const element of elements) {
+        element.scrollIntoView({ block: 'center', inline: 'center' });
+        const rect = visibleRect(element);
+        if (rect) {
+          return {
+            x: rect.left + window.scrollX,
+            y: rect.top + window.scrollY,
+            width: rect.width,
+            height: rect.height,
+          };
+        }
+      }
+      return { error: 'No visible element matched SELECTOR' };
+
+      function visibleRect(element) {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        if (rect.width <= 0 || rect.height <= 0) return null;
+        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) <= 0) return null;
+        return rect;
+      }
     })()`,
   })
   const rect = result.result?.value
@@ -375,6 +404,10 @@ async function performActions(cdp) {
   const targetForType = typeSelector || focusSelector || clickSelector
   const shouldTypeBeforeClick = Boolean(typeSelector || focusSelector)
 
+  if (preClickSelector) {
+    await clickElement(cdp, preClickSelector)
+    if (actionWaitMs > 0) await sleep(actionWaitMs)
+  }
   if (clickSelector && !shouldTypeBeforeClick) await clickElement(cdp, clickSelector)
   if (targetForType && (typeSelector || focusSelector || !clickSelector)) {
     await focusElement(cdp, targetForType)
@@ -488,15 +521,27 @@ async function elementCenter(cdp, cssSelector) {
   const result = await cdp.send('Runtime.evaluate', {
     returnByValue: true,
     expression: `(() => {
-      const element = document.querySelector(${literal});
-      if (!element) return { error: 'No element matched selector' };
-      element.scrollIntoView({ block: 'center', inline: 'center' });
-      const rect = element.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return { error: 'Selector has no visible box' };
-      return {
-        x: Math.round(rect.left + rect.width / 2),
-        y: Math.round(rect.top + rect.height / 2),
-      };
+      const elements = [...document.querySelectorAll(${literal})];
+      if (!elements.length) return { error: 'No element matched selector' };
+      for (const element of elements) {
+        element.scrollIntoView({ block: 'center', inline: 'center' });
+        const rect = visibleRect(element);
+        if (rect) {
+          return {
+            x: Math.round(rect.left + rect.width / 2),
+            y: Math.round(rect.top + rect.height / 2),
+          };
+        }
+      }
+      return { error: 'No visible element matched selector' };
+
+      function visibleRect(element) {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        if (rect.width <= 0 || rect.height <= 0) return null;
+        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) <= 0) return null;
+        return rect;
+      }
     })()`,
   })
   const point = result.result?.value
@@ -837,16 +882,29 @@ function chromeEnv() {
   }
 }
 
-function parseNumbers(value) {
-  return value
-    .split(',')
-    .map((entry) => Number(entry.trim()))
-    .filter((entry) => Number.isInteger(entry) && entry > 0)
+function parseNumbers(value, name) {
+  const raw = value.trim()
+  if (!raw) return []
+
+  return raw.split(',').map((entry) => {
+    const trimmed = entry.trim()
+    const parsed = Number(trimmed)
+    if (!trimmed || !Number.isInteger(parsed) || parsed <= 0) {
+      throw new Error(`${name} must be a comma-separated list of positive integers; invalid value: ${trimmed || '(empty)'}`)
+    }
+
+    return parsed
+  })
 }
 
 function numberEnv(name, fallback, allowZero = false) {
-  const value = Number(process.env[name])
-  return Number.isFinite(value) && (value > 0 || (allowZero && value === 0)) ? value : fallback
+  const raw = process.env[name]
+  if (raw === undefined || raw === '') return fallback
+
+  const value = Number(raw)
+  if (Number.isFinite(value) && (value > 0 || (allowZero && value === 0))) return value
+
+  throw new Error(`${name} must be ${allowZero ? 'zero or a positive number' : 'a positive number'}; invalid value: ${raw}`)
 }
 
 function boolEnv(name) {
@@ -895,6 +953,20 @@ function summary(extra = {}) {
   }
 }
 
+function dryRunSummary() {
+  return {
+    ok: true,
+    dryRun: true,
+    url,
+    mode: captureMode(),
+    outDir,
+    captures: captures.map((capture) => ({ ...capture, ok: true, planned: true })),
+    planned: captures,
+    files: [],
+    failures: [],
+  }
+}
+
 function captureMode() {
   if (selector) return 'selector'
   if (fullPage && scrollPage) return 'full-page-scroll'
@@ -919,7 +991,10 @@ function missingRuntimeLibrary(error) {
 function safeName(parsedUrl) {
   const isLocalTarget = ['localhost', '127.0.0.1', '0.0.0.0'].includes(parsedUrl.hostname)
   const route = parsedUrl.pathname === '/' ? 'home' : parsedUrl.pathname
-  const name = `${isLocalTarget ? '' : `${parsedUrl.hostname}-`}${route}`
+  const search = parsedUrl.search ? `query-${parsedUrl.search.slice(1)}` : ''
+  const hash = parsedUrl.hash ? `hash-${parsedUrl.hash.slice(1)}` : ''
+  const target = [route, search, hash].filter(Boolean).join('-')
+  const name = `${isLocalTarget ? '' : `${parsedUrl.hostname}-`}${target}`
     .replace(/[^a-z0-9]+/gi, '-')
     .replace(/^-|-$/g, '')
 

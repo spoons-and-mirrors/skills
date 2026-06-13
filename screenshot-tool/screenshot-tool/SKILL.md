@@ -50,11 +50,11 @@ Choose the capture mode from the user's words:
 - Full page with scrolling or lazy-loaded content: add `FULL_PAGE=1 SCROLL_PAGE=1`.
 - Component, section, element, card, header, modal, specific thing: add `SELECTOR='css selector'` and use `PADDING=20` unless the user requests another padding.
 - Page/app not ready until an element appears: add `WAIT_FOR_SELECTOR='css selector'`.
-- Click/focus/type/hover/key then screenshot: add `CLICK_SELECTOR`, `FOCUS_SELECTOR`, `TYPE_SELECTOR`, `TYPE_TEXT`, `HOVER_SELECTOR`, and/or `PRESS_KEY` to the same helper command.
+- Click/focus/type/hover/key then screenshot: add `PRE_CLICK_SELECTOR`, `CLICK_SELECTOR`, `FOCUS_SELECTOR`, `TYPE_SELECTOR`, `TYPE_TEXT`, `HOVER_SELECTOR`, and/or `PRESS_KEY` to the same helper command.
 
 Do not use a second browser automation snippet for full-page, selector, wait,
-click, focus, type, hover, or key shots. The helper supports those modes
-directly.
+click, pre-click, focus, type, hover, or key shots. The helper supports those
+modes directly.
 
 ## Common Commands
 
@@ -98,6 +98,12 @@ Click an element, then screenshot the resulting state:
 
 ```bash
 CLICK_SELECTOR='button[aria-label="Open menu"]' WIDTHS=1440 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/pricing
+```
+
+Click to open UI, type into the revealed field, then screenshot:
+
+```bash
+PRE_CLICK_SELECTOR='button[aria-label="Open search"]' TYPE_SELECTOR='input[name="search"]' TYPE_TEXT='enterprise' WIDTHS=1440 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.0.0.1:PORT/search
 ```
 
 Hover an element, then screenshot the hover state:
@@ -168,8 +174,8 @@ node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot-install.mjs
 - `CONTINUE_ON_ERROR=1`
 - `PADDING=20` for `SELECTOR` captures
 
-Output files are named from the route and viewport, such as
-`screenshots/pricing-768x900.png`.
+Output files are named from the route, query string, hash, and viewport, such
+as `screenshots/pricing-query-tab-pro-768x900.png`.
 
 ## Options
 
@@ -188,11 +194,12 @@ Output files are named from the route and viewport, such as
 - `VIRTUAL_TIME_BUDGET`: pass Chrome's virtual-time budget for timer-heavy pages.
 - `FULL_PAGE=1`: capture the full document height instead of only the viewport.
 - `SCROLL_PAGE=1` or `SCROLL=1`: scroll through the page before capture to trigger lazy-loaded content.
-- `WAIT_FOR_SELECTOR`: wait until a visible element matching the selector exists before actions/capture.
+- `WAIT_FOR_SELECTOR`: wait until any visible element matching the selector exists before actions/capture.
 - `WAIT_FOR_TIMEOUT_MS`: timeout for `WAIT_FOR_SELECTOR`, default `WAIT_MS`.
 - `SELECTOR`: CSS selector for a component/element screenshot.
 - `PADDING` or `COMPONENT_PADDING`: pixels of visual padding around `SELECTOR`, default `20`.
-- `CLICK_SELECTOR`: CSS selector to click before capture.
+- `PRE_CLICK_SELECTOR`: CSS selector to click before focus/type/click actions. Use this for opening menus, dialogs, or search boxes.
+- `CLICK_SELECTOR`: CSS selector to click before capture. When combined with `TYPE_SELECTOR` or `FOCUS_SELECTOR`, this click runs after typing/focus, which is useful for submit buttons.
 - `FOCUS_SELECTOR`: CSS selector to focus before capture.
 - `HOVER_SELECTOR`: CSS selector to move the mouse over before capture. Hover runs last so visual hover state is preserved.
 - `TYPE_SELECTOR`: CSS selector to focus before inserting `TYPE_TEXT`.
@@ -204,7 +211,7 @@ Output files are named from the route and viewport, such as
 - `JSON=1` or `SCREENSHOT_JSON=1`: print a machine-readable summary with per-viewport capture metadata to stdout; progress stays on stderr.
 - `MANIFEST=1`: write `manifest.json` in `OUT_DIR`.
 - `MANIFEST_FILE`: write the manifest to an explicit path.
-- `DRY_RUN=1`: validate inputs and print planned captures without launching Chrome or writing files.
+- `DRY_RUN=1`: strictly validate inputs and print planned captures without launching Chrome or writing files.
 - `STRICT=1`: exit nonzero if any viewport fails.
 - `AUTO_INSTALL=0`: do not auto-run the installer when Chrome is missing.
 
@@ -219,13 +226,14 @@ For visual debugging or design work, use a tight capture-inspect-adjust loop:
 
 Use `JSON=1 MANIFEST=1` when another agent/tool needs file paths. Use
 `DRY_RUN=1 JSON=1` when composing a complex command before spending a Chrome
-launch. Keep screenshots in task-specific `OUT_DIR`s when comparing iterations.
+launch. URL query strings and hash routes are included in filenames, but still
+use task-specific `OUT_DIR`s when comparing iterations.
 
 ## Advanced Cases
 
 The helper intentionally does not use Playwright. It already supports viewport,
 full-page, lazy-scroll full-page, padded selector screenshots, and simple
-wait/click/focus/type/hover/key state setup. Use another browser automation
+wait/click/pre-click/focus/type/hover/key state setup. Use another browser automation
 workflow only when the user specifically needs unsupported interaction, such as:
 
 - login flows with multiple pages or authentication state

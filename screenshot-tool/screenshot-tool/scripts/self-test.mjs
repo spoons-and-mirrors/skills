@@ -18,14 +18,16 @@ const baseEnv = {
 
 await testDryRunJson()
 await testEarlyValidation()
+await testStrictNumberValidation()
 
 console.log('screenshot-tool self-test passed')
 
 async function testDryRunJson() {
-  const { stdout, stderr } = await execFileAsync(process.execPath, [screenshotScript, 'http://127.0.0.1:9/pricing?tab=pro'], {
+  const { stdout, stderr } = await execFileAsync(process.execPath, [screenshotScript, 'http://127.0.0.1:9/pricing?tab=pro#/annual'], {
     env: {
       ...baseEnv,
       FULL_PAGE: '1',
+      PRE_CLICK_SELECTOR: 'button[aria-label="Open menu"]',
       HOVER_SELECTOR: '.pricing-card button',
       PRESS_KEY: 'Escape',
       WIDTHS: '390,768',
@@ -39,9 +41,12 @@ async function testDryRunJson() {
   assert.equal(result.dryRun, true)
   assert.equal(result.mode, 'full-page')
   assert.equal(result.planned.length, 2)
+  assert.equal(result.captures.length, 2)
+  assert.equal(result.captures[0].ok, true)
+  assert.equal(result.captures[0].planned, true)
   assert.equal(result.planned[0].width, 390)
   assert.equal(result.planned[0].height, 800)
-  assert.match(result.planned[0].file, /pricing-390xfull\.png$/)
+  assert.match(result.planned[0].file, /pricing-query-tab-pro-hash-annual-390xfull\.png$/)
 }
 
 async function testEarlyValidation() {
@@ -54,5 +59,17 @@ async function testEarlyValidation() {
       },
     }),
     /HEIGHTS must contain the same number of values as WIDTHS/,
+  )
+}
+
+async function testStrictNumberValidation() {
+  await assert.rejects(
+    execFileAsync(process.execPath, [screenshotScript, 'http://127.0.0.1:9/pricing'], {
+      env: {
+        ...baseEnv,
+        WIDTHS: '390,nope',
+      },
+    }),
+    /WIDTHS must be a comma-separated list of positive integers/,
   )
 }
