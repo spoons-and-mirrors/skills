@@ -1,13 +1,11 @@
 import { access, mkdir, readdir } from 'node:fs/promises'
 import { constants } from 'node:fs'
-import { delimiter, dirname, join, resolve } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { spawn } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
 
 const browserRoot = '/tmp/opencode/browsers'
 const debsDir = '/tmp/opencode/browser-lib-debs'
 const libsDir = '/tmp/opencode/browser-libs'
-const skillRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const packages = [
   'libgtk-3-0t64',
   'libatk1.0-0t64',
@@ -43,29 +41,97 @@ const packages = [
   'fonts-liberation',
 ]
 
-async function executable(name) {
-  const paths = (process.env.PATH ?? '').split(delimiter).filter(Boolean)
+await mkdir(browserRoot, { recursive: true })
 
-  for (const base of paths) {
-    const candidate = join(base, name)
+if (await systemChrome()) {
+  console.log('System Chrome/Chromium found; skipping browser download.')
+} else if (await downloadedChrome()) {
+  console.log('Cached Chrome found; skipping browser download.')
+} else {
+  const pnpm = await executableFromPath('pnpm')
+  const npx = await executableFromPath('npx')
 
-    try {
-      await access(candidate, constants.X_OK)
-      return candidate
-    } catch {
-      // Keep searching PATH.
+  if (pnpm) {
+    await run(pnpm, ['dlx', '@puppeteer/browsers', 'install', 'chrome@stable', '--path', browserRoot])
+  } else if (npx) {
+    await run(npx, ['--yes', '@puppeteer/browsers', 'install', 'chrome@stable', '--path', browserRoot])
+  } else {
+    throw new Error('Cannot install Chrome: pnpm or npx is required.')
+  }
+}
+
+if (process.platform === 'linux') {
+  await installLinuxLibraries()
+}
+
+async function installLinuxLibraries() {
+  const aptGet = await executableFromPath('apt-get')
+  const dpkgDeb = await executableFromPath('dpkg-deb')
+
+  if (!aptGet || !dpkgDeb) {
+    console.warn('Skipping Linux browser library extraction: apt-get or dpkg-deb was not found.')
+    return
+  }
+
+  await mkdir(debsDir, { recursive: true })
+  await mkdir(libsDir, { recursive: true })
+  await run(aptGet, ['download', ...packages], { cwd: debsDir })
+
+  const debs = (await readdir(debsDir))
+    .filter((entry) => entry.endsWith('.deb'))
+    .map((entry) => join(debsDir, entry))
+
+  for (const deb of debs) {
+    await run(dpkgDeb, ['-x', deb, libsDir])
+  }
+}
+
+async function systemChrome() {
+  return (
+    (await executable(process.env.CHROME_PATH)) ||
+    (await executable(process.env.CHROME_BIN)) ||
+    (await executableFromPath('google-chrome')) ||
+    (await executableFromPath('google-chrome-stable')) ||
+    (await executableFromPath('chromium')) ||
+    (await executableFromPath('chromium-browser'))
+  )
+}
+
+async function downloadedChrome() {
+  try {
+    const entries = await readdir(join(browserRoot, 'chrome'), { recursive: true, withFileTypes: true })
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name === 'chrome' && entry.parentPath.includes('chrome-linux64')) {
+        const found = await executable(join(entry.parentPath, entry.name))
+        if (found) return found
+      }
     }
+  } catch {
+    return null
   }
 
   return null
 }
 
-async function exists(pathname) {
+async function executableFromPath(name) {
+  const paths = (process.env.PATH ?? '').split(delimiter).filter(Boolean)
+
+  for (const base of paths) {
+    const found = await executable(join(base, name))
+    if (found) return found
+  }
+
+  return null
+}
+
+async function executable(pathname) {
+  if (!pathname) return null
+
   try {
-    await access(pathname)
-    return true
+    await access(pathname, constants.X_OK)
+    return pathname
   } catch {
-    return false
+    return null
   }
 }
 
@@ -75,89 +141,8 @@ function run(command, args, options = {}) {
 
     child.on('error', reject)
     child.on('exit', (code) => {
-      if (code === 0) {
-        resolve()
-        return
-      }
-
-      reject(new Error(`${command} ${args.join(' ')} exited with ${code}`))
+      if (code === 0) resolve()
+      else reject(new Error(`${command} ${args.join(' ')} exited with ${code}`))
     })
   })
-}
-
-await mkdir(browserRoot, { recursive: true })
-const pnpm = await executable('pnpm')
-const npx = await executable('npx')
-const npm = await executable('npm')
-
-if (!pnpm && !npx && !npm) {
-  throw new Error('Cannot install screenshot runtime: pnpm, npx, or npm is required.')
-}
-
-const installEnv = { ...process.env, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' }
-const hasPackageJson = await exists(join(skillRoot, 'package.json'))
-
-if (!hasPackageJson) {
-  await run(npm ?? npx, npm ? ['init', '-y'] : ['--yes', 'npm', 'init', '-y'], {
-    cwd: skillRoot,
-  })
-}
-
-if (pnpm) {
-  await run(pnpm, ['add', '@playwright/test'], { cwd: skillRoot, env: installEnv })
-} else if (npm) {
-  await run(npm, ['install', '@playwright/test'], { cwd: skillRoot, env: installEnv })
-} else {
-  await run(npx, ['--yes', 'npm', 'install', '@playwright/test'], {
-    cwd: skillRoot,
-    env: installEnv,
-  })
-}
-
-if (pnpm) {
-  await run(pnpm, [
-    'dlx',
-    '@puppeteer/browsers',
-    'install',
-    'chrome@stable',
-    '--path',
-    browserRoot,
-  ])
-} else if (npx) {
-  await run(npx, [
-    '--yes',
-    '@puppeteer/browsers',
-    'install',
-    'chrome@stable',
-    '--path',
-    browserRoot,
-  ])
-} else {
-  throw new Error('Cannot install Chrome: neither pnpm nor npx was found.')
-}
-
-if (process.platform !== 'linux') {
-  process.exit(0)
-}
-
-const aptGet = await executable('apt-get')
-const dpkgDeb = await executable('dpkg-deb')
-
-if (!aptGet || !dpkgDeb) {
-  console.warn(
-    'Skipping Linux browser library extraction: apt-get or dpkg-deb was not found.',
-  )
-  process.exit(0)
-}
-
-await mkdir(debsDir, { recursive: true })
-await mkdir(libsDir, { recursive: true })
-await run(aptGet, ['download', ...packages], { cwd: debsDir })
-
-const debs = (await readdir(debsDir))
-  .filter((entry) => entry.endsWith('.deb'))
-  .map((entry) => join(debsDir, entry))
-
-for (const deb of debs) {
-  await run(dpkgDeb, ['-x', deb, libsDir])
 }

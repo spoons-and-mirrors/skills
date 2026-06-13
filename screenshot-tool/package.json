@@ -4,8 +4,5 @@
   "scripts": {
     "screenshot": "node scripts/screenshot.mjs",
     "screenshot:install": "node scripts/screenshot-install.mjs"
-  },
-  "dependencies": {
-    "@playwright/test": "^1.60.0"
   }
 }
