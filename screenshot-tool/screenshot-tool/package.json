@@ -2,7 +2,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "check": "node --check scripts/screenshot.mjs && node --check scripts/screenshot-install.mjs && node --check scripts/self-test.mjs",
     "screenshot": "node scripts/screenshot.mjs",
-    "screenshot:install": "node scripts/screenshot-install.mjs"
+    "screenshot:install": "node scripts/screenshot-install.mjs",
+    "test": "node scripts/self-test.mjs"
   }
 }

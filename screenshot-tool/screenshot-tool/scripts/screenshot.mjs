@@ -43,17 +43,25 @@ const extraChromeArgs = splitArgs(process.env.CHROME_ARGS ?? '')
 const selector = process.env.SELECTOR ?? ''
 const fullPage = boolEnv('FULL_PAGE')
 const scrollPage = boolEnv('SCROLL_PAGE') || boolEnv('SCROLL')
+const waitForSelector = process.env.WAIT_FOR_SELECTOR ?? ''
+const waitForTimeoutMs = numberEnv('WAIT_FOR_TIMEOUT_MS', waitMs)
 const padding = numberEnv('PADDING', numberEnv('COMPONENT_PADDING', 20), true)
 const clickSelector = process.env.CLICK_SELECTOR ?? ''
 const focusSelector = process.env.FOCUS_SELECTOR ?? ''
+const hoverSelector = process.env.HOVER_SELECTOR ?? ''
 const typeSelector = process.env.TYPE_SELECTOR ?? process.env.FILL_SELECTOR ?? ''
 const typeText = process.env.TYPE_TEXT ?? process.env.FILL_TEXT ?? ''
+const pressKey = process.env.PRESS_KEY ?? ''
 const actionWaitMs = numberEnv('ACTION_WAIT_MS', 500, true)
+const jsonOutput = boolEnv('JSON') || boolEnv('SCREENSHOT_JSON')
+const manifestFile = process.env.MANIFEST_FILE ?? (boolEnv('MANIFEST') ? join(outDir, 'manifest.json') : '')
+const dryRun = boolEnv('DRY_RUN')
 const clearBeforeType =
   process.env.CLEAR_BEFORE_TYPE === undefined
     ? Boolean(process.env.FILL_SELECTOR)
     : boolEnv('CLEAR_BEFORE_TYPE')
-const hasActions = Boolean(clickSelector || focusSelector || typeSelector || typeText)
+const hasActions = Boolean(clickSelector || focusSelector || hoverSelector || typeSelector || typeText || pressKey)
+const cdpNeeded = Boolean(selector || fullPage || scrollPage || waitForSelector || hasActions)
 
 if (typeText && !typeSelector && !focusSelector && !clickSelector) {
   throw new Error('TYPE_TEXT requires TYPE_SELECTOR, FOCUS_SELECTOR, or CLICK_SELECTOR.')
@@ -66,6 +74,18 @@ if (selector && fullPage) {
 if (!widths.length) throw new Error('No viewport widths provided')
 if (heights.length && heights.length !== widths.length) {
   throw new Error('HEIGHTS must contain the same number of values as WIDTHS')
+}
+
+const captures = widths.map((width, index) => {
+  const viewportHeight = heights[index] ?? height
+  return { width, height: viewportHeight, file: outputFile(width, viewportHeight) }
+})
+const successes = []
+const failures = []
+
+if (dryRun) {
+  console.log(JSON.stringify(summary({ ok: true, dryRun: true, planned: captures }), null, 2))
+  process.exit(0)
 }
 
 await mkdir(outDir, { recursive: true })
@@ -83,18 +103,13 @@ if (!chrome) {
   )
 }
 
-const successes = []
-const failures = []
 let installerRetried = false
 
-for (const [index, width] of widths.entries()) {
-  const viewportHeight = heights[index] ?? height
-  const file = outputFile(width, viewportHeight)
-
+for (const { width, height: viewportHeight, file } of captures) {
   try {
     await capture({ chrome, file, width, height: viewportHeight })
     successes.push(file)
-    console.log(`${width}x${viewportHeight} -> ${file}`)
+    progress(`${width}x${viewportHeight} -> ${file}`)
   } catch (error) {
     if (autoInstall && !installerRetried && missingRuntimeLibrary(error)) {
       installerRetried = true
@@ -104,7 +119,7 @@ for (const [index, width] of widths.entries()) {
       try {
         await capture({ chrome, file, width, height: viewportHeight })
         successes.push(file)
-        console.log(`${width}x${viewportHeight} -> ${file}`)
+        progress(`${width}x${viewportHeight} -> ${file}`)
         continue
       } catch (retryError) {
         error = retryError
@@ -123,12 +138,21 @@ if (failures.length) {
   console.error(`Screenshot failures: ${failures.length}/${widths.length}`)
 }
 
+if (manifestFile) {
+  await mkdir(dirname(manifestFile), { recursive: true })
+  await writeFile(manifestFile, `${JSON.stringify(summary(), null, 2)}\n`)
+}
+
+if (jsonOutput) {
+  console.log(JSON.stringify(summary(), null, 2))
+}
+
 if (!successes.length || (strict && failures.length)) {
   process.exitCode = 1
 }
 
 async function capture({ chrome, file, width, height }) {
-  if (selector || fullPage || hasActions) {
+  if (cdpNeeded) {
     await captureWithCdp({ chrome, file, width, height })
     return
   }
@@ -238,18 +262,30 @@ async function captureWithCdp({ chrome, file, width, height }) {
       if (settleMs > 0) await sleep(settleMs)
 
       if (hideScrollbars) await hidePageScrollbars(cdp)
+      if (waitForSelector) await waitForElement(cdp, waitForSelector, waitForTimeoutMs)
       if (hasActions) await performActions(cdp)
       if (scrollPage) await scrollThroughPage(cdp)
 
       const data = selector
         ? await captureSelector(cdp, selector)
-        : await captureFullPage(cdp, width)
+        : fullPage
+          ? await captureFullPage(cdp, width)
+          : await captureViewportCdp(cdp)
 
       await writeFile(file, data, 'base64')
     } finally {
       await cdp.close()
     }
   }
+}
+
+async function captureViewportCdp(cdp) {
+  const { data } = await cdp.send('Page.captureScreenshot', {
+    format: 'png',
+    fromSurface: true,
+  })
+
+  return data
 }
 
 async function captureFullPage(cdp, viewportWidth) {
@@ -269,6 +305,32 @@ async function captureFullPage(cdp, viewportWidth) {
   })
 
   return data
+}
+
+async function waitForElement(cdp, cssSelector, timeoutMs) {
+  const literal = JSON.stringify(cssSelector)
+  const deadline = Date.now() + timeoutMs
+  let lastError = 'not found'
+
+  while (Date.now() < deadline) {
+    const result = await cdp.send('Runtime.evaluate', {
+      returnByValue: true,
+      expression: `(() => {
+        const element = document.querySelector(${literal});
+        if (!element) return { ok: false, error: 'not found' };
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return { ok: false, error: 'not visible' };
+        return { ok: true };
+      })()`,
+    })
+    const value = result.result?.value
+
+    if (value?.ok) return
+    lastError = value?.error ?? lastError
+    await sleep(100)
+  }
+
+  throw new Error(`WAIT_FOR_SELECTOR timed out after ${timeoutMs}ms (${lastError}): ${cssSelector}`)
 }
 
 async function captureSelector(cdp, cssSelector) {
@@ -321,17 +383,13 @@ async function performActions(cdp) {
   if (clearBeforeType && targetForType) await clearElement(cdp, targetForType)
   if (typeText) await cdp.send('Input.insertText', { text: typeText })
   if (clickSelector && shouldTypeBeforeClick) await clickElement(cdp, clickSelector)
+  if (pressKey) await pressKeyOnce(cdp, pressKey)
+  if (hoverSelector) await hoverElement(cdp, hoverSelector)
   if (actionWaitMs > 0) await sleep(actionWaitMs)
 }
 
 async function clickElement(cdp, cssSelector) {
-  const point = await elementCenter(cdp, cssSelector)
-  await cdp.send('Input.dispatchMouseEvent', {
-    type: 'mouseMoved',
-    x: point.x,
-    y: point.y,
-    button: 'none',
-  })
+  const point = await hoverElement(cdp, cssSelector)
   await cdp.send('Input.dispatchMouseEvent', {
     type: 'mousePressed',
     x: point.x,
@@ -346,6 +404,47 @@ async function clickElement(cdp, cssSelector) {
     button: 'left',
     clickCount: 1,
   })
+}
+
+async function hoverElement(cdp, cssSelector) {
+  const point = await elementCenter(cdp, cssSelector)
+  await cdp.send('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x: point.x,
+    y: point.y,
+    button: 'none',
+  })
+  return point
+}
+
+async function pressKeyOnce(cdp, key) {
+  const event = keyEvent(key)
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', ...event })
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...event })
+}
+
+function keyEvent(key) {
+  const aliases = {
+    Space: { key: ' ', code: 'Space', windowsVirtualKeyCode: 32 },
+    Enter: { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 },
+    Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 },
+    Esc: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 },
+    Tab: { key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 },
+    Backspace: { key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 },
+    Delete: { key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46 },
+    ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38 },
+    ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 },
+    ArrowLeft: { key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 },
+    ArrowRight: { key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 },
+  }
+
+  return aliases[key] ?? {
+    key,
+    code: key.length === 1 ? `Key${key.toUpperCase()}` : key,
+    text: key.length === 1 ? key : undefined,
+    unmodifiedText: key.length === 1 ? key : undefined,
+    windowsVirtualKeyCode: key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0,
+  }
 }
 
 async function focusElement(cdp, cssSelector) {
@@ -616,7 +715,14 @@ async function connectCdp(url) {
 async function runInstaller() {
   const installer = resolve(dirname(fileURLToPath(import.meta.url)), 'screenshot-install.mjs')
   await new Promise((resolvePromise, reject) => {
-    const child = spawn(process.execPath, [installer], { stdio: 'inherit' })
+    const child = spawn(process.execPath, [installer], {
+      stdio: jsonOutput ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+    })
+
+    if (jsonOutput) {
+      child.stdout?.pipe(process.stderr)
+      child.stderr?.pipe(process.stderr)
+    }
 
     child.on('error', reject)
     child.on('exit', (code) => {
@@ -758,6 +864,48 @@ function outputFile(width, height) {
   if (selector) return join(outDir, `${safeName(targetUrl)}-component-${width}x${height}.png`)
   if (fullPage) return join(outDir, `${safeName(targetUrl)}-${width}xfull.png`)
   return join(outDir, `${safeName(targetUrl)}-${width}x${height}.png`)
+}
+
+function summary(extra = {}) {
+  const failureByFile = new Map(failures.map((failure) => [failure.file, failure]))
+  const successFiles = new Set(successes)
+
+  return {
+    ok: successes.length > 0 && !(strict && failures.length),
+    url,
+    mode: captureMode(),
+    outDir,
+    captures: captures.map((capture) => {
+      const failure = failureByFile.get(capture.file)
+
+      return {
+        ...capture,
+        ok: successFiles.has(capture.file),
+        ...(failure ? { error: failure.error.message } : {}),
+      }
+    }),
+    files: successes,
+    failures: failures.map((failure) => ({
+      width: failure.width,
+      height: failure.height,
+      file: failure.file,
+      error: failure.error.message,
+    })),
+    ...extra,
+  }
+}
+
+function captureMode() {
+  if (selector) return 'selector'
+  if (fullPage && scrollPage) return 'full-page-scroll'
+  if (fullPage) return 'full-page'
+  if (cdpNeeded) return 'viewport-cdp'
+  return 'viewport'
+}
+
+function progress(message) {
+  if (jsonOutput) console.error(message)
+  else console.log(message)
 }
 
 function sleep(ms) {
