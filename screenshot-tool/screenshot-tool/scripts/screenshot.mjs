@@ -1,4 +1,4 @@
-import { access, mkdir, readdir, writeFile } from 'node:fs/promises'
+import { access, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { delimiter, join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
@@ -57,6 +57,9 @@ const actionWaitMs = numberEnv('ACTION_WAIT_MS', 500, true)
 const jsonOutput = boolEnv('JSON') || boolEnv('SCREENSHOT_JSON')
 const manifestFile = process.env.MANIFEST_FILE ?? (boolEnv('MANIFEST') ? join(outDir, 'manifest.json') : '')
 const dryRun = boolEnv('DRY_RUN')
+const imageFormat = 'webp'
+const imageQuality = 80
+const webpMethod = 6
 const clearBeforeType =
   process.env.CLEAR_BEFORE_TYPE === undefined
     ? Boolean(process.env.FILL_SELECTOR)
@@ -106,6 +109,17 @@ if (!chrome) {
   )
 }
 
+let webpConverter = await webpConverterPath()
+if (!webpConverter && autoInstall) {
+  await runInstaller()
+  chrome = (await chromePath()) ?? chrome
+  webpConverter = await webpConverterPath()
+}
+
+if (!webpConverter) {
+  throw new Error('No cwebp executable found. Run scripts/screenshot-install.mjs or set CWEBP_PATH.')
+}
+
 let installerRetried = false
 
 for (const { width, height: viewportHeight, file } of captures) {
@@ -118,6 +132,7 @@ for (const { width, height: viewportHeight, file } of captures) {
       installerRetried = true
       await runInstaller()
       chrome = (await chromePath()) ?? chrome
+      webpConverter = (await webpConverterPath()) ?? webpConverter
 
       try {
         await capture({ chrome, file, width, height: viewportHeight })
@@ -164,6 +179,7 @@ async function capture({ chrome, file, width, height }) {
 }
 
 async function captureViewport({ chrome, file, width, height }) {
+  const pngFile = temporaryPngFile(file)
   const chromeArgs = [
     '--headless=new',
     '--no-sandbox',
@@ -181,14 +197,19 @@ async function captureViewport({ chrome, file, width, height }) {
     `--force-device-scale-factor=${deviceScaleFactor}`,
     `--lang=${locale}`,
     `--timeout=${waitMs}`,
-    `--screenshot=${file}`,
+    `--screenshot=${pngFile}`,
     ...(hideScrollbars ? ['--hide-scrollbars'] : []),
     ...(virtualTimeBudget > 0 ? [`--virtual-time-budget=${virtualTimeBudget}`] : []),
     ...extraChromeArgs,
     url,
   ]
 
-  await runChrome(chrome, chromeArgs)
+  try {
+    await runCommand(chrome, chromeArgs)
+    await convertPngToWebp(pngFile, file)
+  } finally {
+    await rm(pngFile, { force: true })
+  }
 }
 
 async function captureWithCdp({ chrome, file, width, height }) {
@@ -279,7 +300,7 @@ async function captureWithCdp({ chrome, file, width, height }) {
           ? await captureFullPage(cdp, width)
           : await captureViewportCdp(cdp)
 
-      await writeFile(file, data, 'base64')
+      await writeWebp(data, file)
     } finally {
       await cdp.close()
     }
@@ -398,6 +419,17 @@ async function captureSelector(cdp, cssSelector) {
   })
 
   return data
+}
+
+async function writeWebp(pngData, file) {
+  const pngFile = temporaryPngFile(file)
+
+  try {
+    await writeFile(pngFile, pngData, 'base64')
+    await convertPngToWebp(pngFile, file)
+  } finally {
+    await rm(pngFile, { force: true })
+  }
 }
 
 async function performActions(cdp) {
@@ -581,12 +613,32 @@ async function scrollThroughPage(cdp) {
   })
 }
 
-function runChrome(command, chromeArgs) {
+async function convertPngToWebp(inputFile, outputFile) {
+  await runCommand(webpConverter, [
+    '-quiet',
+    '-m',
+    String(webpMethod),
+    '-q',
+    String(imageQuality),
+    '-mt',
+    '-af',
+    '-sharp_yuv',
+    inputFile,
+    '-o',
+    outputFile,
+  ])
+}
+
+function temporaryPngFile(file) {
+  return `${file}.tmp.png`
+}
+
+function runCommand(command, args) {
   return new Promise((resolvePromise, reject) => {
     let stdout = ''
     let stderr = ''
     let timedOut = false
-    const child = spawn(command, chromeArgs, { env: chromeEnv() })
+    const child = spawn(command, args, { env: chromeEnv() })
     const timeout = setTimeout(() => {
       timedOut = true
       child.kill('SIGTERM')
@@ -777,6 +829,14 @@ async function runInstaller() {
   })
 }
 
+async function webpConverterPath() {
+  return (
+    (await executable(process.env.CWEBP_PATH)) ||
+    (await executable(process.env.CWEBP_BIN)) ||
+    (await executable(resolve(dirname(fileURLToPath(import.meta.url)), '..', 'node_modules', '.bin', process.platform === 'win32' ? 'cwebp.cmd' : 'cwebp')))
+  )
+}
+
 async function ensureFontConfig() {
   const fontRoot = '/tmp/opencode/browser-libs/usr/share/fonts'
   const configDir = '/tmp/opencode/browser-libs/etc/fonts'
@@ -919,9 +979,9 @@ function splitArgs(value) {
 }
 
 function outputFile(width, height) {
-  if (selector) return join(outDir, `${safeName(targetUrl)}-component-${width}x${height}.png`)
-  if (fullPage) return join(outDir, `${safeName(targetUrl)}-${width}xfull.png`)
-  return join(outDir, `${safeName(targetUrl)}-${width}x${height}.png`)
+  if (selector) return join(outDir, `${safeName(targetUrl)}-component-${width}x${height}.${imageFormat}`)
+  if (fullPage) return join(outDir, `${safeName(targetUrl)}-${width}xfull.${imageFormat}`)
+  return join(outDir, `${safeName(targetUrl)}-${width}x${height}.${imageFormat}`)
 }
 
 function summary(extra = {}) {
@@ -932,6 +992,8 @@ function summary(extra = {}) {
     ok: successes.length > 0 && !(strict && failures.length),
     url,
     mode: captureMode(),
+    format: imageFormat,
+    quality: imageQuality,
     outDir,
     captures: captures.map((capture) => {
       const failure = failureByFile.get(capture.file)
@@ -959,6 +1021,8 @@ function dryRunSummary() {
     dryRun: true,
     url,
     mode: captureMode(),
+    format: imageFormat,
+    quality: imageQuality,
     outDir,
     captures: captures.map((capture) => ({ ...capture, ok: true, planned: true })),
     planned: captures,

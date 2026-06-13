@@ -6,5 +6,8 @@
     "screenshot": "node scripts/screenshot.mjs",
     "screenshot:install": "node scripts/screenshot-install.mjs",
     "test": "node scripts/self-test.mjs"
+  },
+  "dependencies": {
+    "cwebp-bin": "8.0.0"
   }
 }

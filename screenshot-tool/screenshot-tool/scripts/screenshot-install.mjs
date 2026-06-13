@@ -1,7 +1,8 @@
 import { access, mkdir, readdir } from 'node:fs/promises'
 import { constants } from 'node:fs'
-import { delimiter, join } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 
 const browserRoot = '/tmp/opencode/browsers'
 const debsDir = '/tmp/opencode/browser-lib-debs'
@@ -40,6 +41,7 @@ const packages = [
   'fonts-dejavu-mono',
   'fonts-liberation',
 ]
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 await mkdir(browserRoot, { recursive: true })
 
@@ -62,6 +64,18 @@ if (await systemChrome()) {
 
 if (process.platform === 'linux') {
   await installLinuxLibraries()
+}
+
+if (await configuredCwebp()) {
+  console.log('Configured cwebp found; skipping converter install.')
+} else if (await packagedCwebp()) {
+  console.log('Packaged cwebp found; skipping converter install.')
+} else {
+  await installNodeDependencies()
+}
+
+if (!(await cwebp())) {
+  throw new Error('cwebp was not found after install. Run npm install in the skill directory or set CWEBP_PATH.')
 }
 
 async function installLinuxLibraries() {
@@ -95,6 +109,31 @@ async function systemChrome() {
     (await executableFromPath('chromium')) ||
     (await executableFromPath('chromium-browser'))
   )
+}
+
+async function cwebp() {
+  return (await configuredCwebp()) || (await packagedCwebp())
+}
+
+async function configuredCwebp() {
+  return (await executable(process.env.CWEBP_PATH)) || (await executable(process.env.CWEBP_BIN))
+}
+
+async function packagedCwebp() {
+  return executable(join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'cwebp.cmd' : 'cwebp'))
+}
+
+async function installNodeDependencies() {
+  const npm = await executableFromPath('npm')
+  const pnpm = await executableFromPath('pnpm')
+
+  if (npm) {
+    await run(npm, ['install', '--omit=dev', '--no-audit', '--no-fund'], { cwd: root })
+  } else if (pnpm) {
+    await run(pnpm, ['install', '--prod'], { cwd: root })
+  } else {
+    throw new Error('Cannot install cwebp-bin: npm or pnpm is required.')
+  }
 }
 
 async function downloadedChrome() {

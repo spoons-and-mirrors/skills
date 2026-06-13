@@ -5,8 +5,10 @@
       "files": [
         "SKILL.md",
         "package.json",
+        "package-lock.json",
         "scripts/screenshot-install.mjs",
-        "scripts/screenshot.mjs"
+        "scripts/screenshot.mjs",
+        "scripts/self-test.mjs"
       ]
     }
   ]

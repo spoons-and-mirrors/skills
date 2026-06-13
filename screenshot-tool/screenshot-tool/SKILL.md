@@ -12,7 +12,7 @@ dev server, inspect package scripts, or install app dependencies unless the user
 explicitly asks for that.
 
 Ethos: take the screenshot now and work from the image. Capture first, inspect
-the PNG only if visual judgment is needed, then adjust with another targeted
+the WebP only if visual judgment is needed, then adjust with another targeted
 capture. Do not replace this helper with browser automation for normal
 screenshot work.
 
@@ -31,16 +31,18 @@ node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs http://127.
 If the URL is missing, ask one short question for the exact URL or base URL and
 path. Do not guess the port or framework.
 
-The helper uses native Chrome CLI by default, one Chrome process per viewport.
-It hides Chrome stderr on success, keeps already-written PNGs when one viewport
-fails, and auto-installs cached Chrome under `/tmp/opencode` only when no Chrome
-or Chromium executable is found. It also retries once after installing runtime
-libraries when Chrome fails because a shared browser library is missing. CDP
-modes wait `SETTLE_MS=1000` after page load before acting or capturing, so common
-initial animations and hydration have a chance to settle.
+The helper uses native Chrome CLI by default, one Chrome process per viewport,
+then converts the temporary PNG to WebP with `cwebp -m 6 -q 80 -mt -af
+-sharp_yuv` and deletes the PNG. It hides Chrome stderr on success, keeps
+already-written WebPs when one viewport fails, and auto-installs cached Chrome
+under `/tmp/opencode` plus the packaged `cwebp-bin` converter only when needed.
+It also retries once after installing runtime libraries when Chrome fails because
+a shared browser library is missing. CDP modes wait `SETTLE_MS=1000` after page
+load before acting or capturing, so common initial animations and hydration have
+a chance to settle.
 
 After a successful capture, report the generated file path. If the user asks to
-inspect the screenshot content, read the PNG that was just generated; do not
+inspect the screenshot content, read the WebP that was just generated; do not
 take another screenshot unless they ask for another viewport or route.
 
 Choose the capture mode from the user's words:
@@ -154,8 +156,9 @@ Relative target with a base URL:
 BASE_URL=http://127.0.0.1:PORT node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs /pricing
 ```
 
-Manual install or reinstall of Chrome/runtime libraries, only after the
-screenshot command reports a missing-browser or missing-library failure:
+Manual install or reinstall of Chrome, `cwebp`, or runtime libraries, only after
+the screenshot command reports a missing-browser, missing-converter, or
+missing-library failure:
 
 ```bash
 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot-install.mjs
@@ -173,9 +176,10 @@ node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot-install.mjs
 - `DEVICE_SCALE_FACTOR=1`
 - `CONTINUE_ON_ERROR=1`
 - `PADDING=20` for `SELECTOR` captures
+- Output format is fixed to WebP quality 80, encoded with `cwebp -m 6 -mt -af -sharp_yuv`.
 
 Output files are named from the route, query string, hash, and viewport, such
-as `screenshots/pricing-query-tab-pro-768x900.png`.
+as `screenshots/pricing-query-tab-pro-768x900.webp`.
 
 ## Options
 
@@ -188,6 +192,7 @@ as `screenshots/pricing-query-tab-pro-768x900.png`.
 - `COMMAND_TIMEOUT_MS`: wrapper watchdog timeout for each Chrome process.
 - `OUT_DIR` or `OUTPUT_DIR`: output directory relative to the current directory.
 - `CHROME_PATH` or `CHROME_BIN`: explicit Chrome/Chromium executable.
+- `CWEBP_PATH` or `CWEBP_BIN`: explicit `cwebp` executable.
 - `CHROME_ARGS`: extra Chrome flags, space-separated.
 - `DEVICE_SCALE_FACTOR`: Chrome device scale factor.
 - `HIDE_SCROLLBARS=true`: hide scrollbars in captures.
@@ -220,7 +225,7 @@ as `screenshots/pricing-query-tab-pro-768x900.png`.
 For visual debugging or design work, use a tight capture-inspect-adjust loop:
 
 1. Capture immediately with the smallest useful viewport set.
-2. Read the generated PNG when visual judgment matters.
+2. Read the generated WebP when visual judgment matters.
 3. Adjust selectors, widths, waits, or UI state flags.
 4. Recapture only the route, viewport, or component that needs another look.
 
@@ -248,5 +253,6 @@ path.
 - URL unreachable: check the exact URL with `curl -I --max-time 5 URL`.
 - Chrome missing: run `screenshot-install.mjs` or set `CHROME_PATH`.
 - Blank or early screenshot: rerun with `WAIT_FOR_SELECTOR`, a higher `WAIT_MS`, or `VIRTUAL_TIME_BUDGET`.
-- One viewport fails: keep the successful PNGs and retry only the failed width.
+- WebP converter missing: run `screenshot-install.mjs` or set `CWEBP_PATH`.
+- One viewport fails: keep the successful WebPs and retry only the failed width.
 - Noisy font/HarfBuzz stderr on success: ignore it; the helper suppresses it.

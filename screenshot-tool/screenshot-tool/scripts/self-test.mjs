@@ -40,13 +40,15 @@ async function testDryRunJson() {
   assert.equal(result.ok, true)
   assert.equal(result.dryRun, true)
   assert.equal(result.mode, 'full-page')
+  assert.equal(result.format, 'webp')
+  assert.equal(result.quality, 80)
   assert.equal(result.planned.length, 2)
   assert.equal(result.captures.length, 2)
   assert.equal(result.captures[0].ok, true)
   assert.equal(result.captures[0].planned, true)
   assert.equal(result.planned[0].width, 390)
   assert.equal(result.planned[0].height, 800)
-  assert.match(result.planned[0].file, /pricing-query-tab-pro-hash-annual-390xfull\.png$/)
+  assert.match(result.planned[0].file, /pricing-query-tab-pro-hash-annual-390xfull\.webp$/)
 }
 
 async function testEarlyValidation() {
