@@ -36,6 +36,9 @@ then converts the temporary PNG to WebP with `cwebp -m 6 -q 80 -mt -af
 -sharp_yuv` and deletes the PNG. It hides Chrome stderr on success, keeps
 already-written WebPs when one viewport fails, and auto-installs cached Chrome
 under `/tmp/opencode` plus the packaged `cwebp-bin` converter only when needed.
+`node_modules` is not shipped with the skill; if the packaged converter is
+missing, the screenshot command auto-runs `scripts/screenshot-install.mjs`, which
+runs `npm install --omit=dev --no-audit --no-fund` in the skill directory.
 It also retries once after installing runtime libraries when Chrome fails because
 a shared browser library is missing. CDP modes wait `SETTLE_MS=1000` after page
 load before acting or capturing, so common initial animations and hydration have
@@ -156,9 +159,9 @@ Relative target with a base URL:
 BASE_URL=http://127.0.0.1:PORT node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot.mjs /pricing
 ```
 
-Manual install or reinstall of Chrome, `cwebp`, or runtime libraries, only after
-the screenshot command reports a missing-browser, missing-converter, or
-missing-library failure:
+Manual install or reinstall of Chrome, the packaged `cwebp-bin` dependency, or
+runtime libraries, only after the screenshot command reports a missing-browser,
+missing-converter, or missing-library failure:
 
 ```bash
 node ~/.cache/opencode/skills/screenshot-tool/scripts/screenshot-install.mjs
